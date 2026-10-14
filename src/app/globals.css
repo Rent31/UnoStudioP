@@ -1,0 +1,392 @@
+@import "tailwindcss";
+@import "./cards.css";
+
+/* ------------------------------------------------------------------ */
+/* Theme. Dark by default, light via html[data-theme="light"].         */
+/* ------------------------------------------------------------------ */
+:root {
+  --bg: #0c0d10;
+  --bg2: #111317;
+  --surf: #15181d;
+  --surf2: #1b1f26;
+  --ink: #eceef2;
+  --ink2: #b4b9c4;
+  --mut: #767d8b;
+  --line: #242933;
+  --line2: #333a47;
+  --acc: #e8502f;
+  --gold: #efb53f;
+  --grn: #3fae6a;
+  --felt: #10151a;
+  --shadow: 0 18px 40px -22px rgba(0, 0, 0, .9);
+
+  /* Fluid card scales. These are sensible defaults for a desktop window and
+     are recomputed against both viewport axes at runtime by useFluidScale. */
+  --k-hand: .62;
+  --k-pile: .72;
+  --k-seat: .32;
+  --k-seat-side: .28;
+  --panel-w: min(320px, 92vw);
+}
+:root[data-theme="light"] {
+  --bg: #f4f4f1;
+  --bg2: #ecece8;
+  --surf: #ffffff;
+  --surf2: #f3f3ef;
+  --ink: #15171b;
+  --ink2: #3e434c;
+  --mut: #777c86;
+  --line: #dedddA;
+  --line2: #c6c6c1;
+  --felt: #e3e3dd;
+  --shadow: 0 18px 40px -26px rgba(0, 0, 0, .35);
+}
+
+/* Base resets live in @layer base so Tailwind utilities still win over them. */
+@layer base {
+  * { box-sizing: border-box; }
+  html { background: var(--bg); }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--font-inter), "Inter", system-ui, -apple-system, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -webkit-tap-highlight-color: transparent;
+    min-height: 100dvh;
+  }
+  button, input, select, textarea { border-radius: 0; font: inherit; color: inherit; }
+  button { cursor: pointer; background: none; border: none; padding: 0; }
+  ::selection { background: var(--acc); color: #fff; }
+  :focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
+}
+
+.disp { font-family: var(--font-anton), "Arial Narrow", sans-serif; letter-spacing: .005em; }
+.mono { font-family: var(--font-jbmono), ui-monospace, monospace; }
+.lbl { font-size: 11px; letter-spacing: .06em; color: var(--mut); }
+
+::-webkit-scrollbar { width: 7px; height: 7px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--line2); }
+
+/* ------------------------------------------------------------------ */
+/* Brand lockup                                                        */
+/* ------------------------------------------------------------------ */
+.brand {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  margin-bottom: 36px;
+}
+
+/* a tilted square of the four deck colours, split by the page background
+   so it reads as four cards laid out rather than a flat grid */
+.brand-mark {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  grid-template-rows: 1fr 1fr;
+  gap: 4px;
+  width: 52px; height: 52px;
+  transform: rotate(45deg);
+  margin-bottom: 30px;
+  animation: markIn .55s cubic-bezier(.2,.85,.3,1.15) both;
+}
+.brand-mark i { display: block; }
+
+.brand-uno {
+  font-size: 56px;
+  line-height: .84;
+  letter-spacing: .035em;
+  text-indent: .035em;
+  animation: fadeUp .45s cubic-bezier(.2,.8,.3,1) both;
+  animation-delay: .1s;
+}
+
+.brand-studio {
+  font-family: var(--font-jbmono), ui-monospace, monospace;
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: .52em;
+  text-indent: .52em;
+  color: var(--mut);
+  margin-top: 9px;
+  animation: fadeUp .45s cubic-bezier(.2,.8,.3,1) both;
+  animation-delay: .18s;
+}
+
+@keyframes markIn {
+  from { opacity: 0; transform: rotate(-20deg) scale(.7); }
+  to { opacity: 1; transform: rotate(45deg) scale(1); }
+}
+
+@media (max-width: 420px) {
+  .brand { margin-bottom: 28px; }
+  .brand-mark { width: 44px; height: 44px; margin-bottom: 25px; }
+  .brand-uno { font-size: 44px; }
+  .brand-studio { font-size: 9.5px; letter-spacing: .42em; text-indent: .42em; }
+}
+
+/* ------------------------------------------------------------------ */
+/* Card scaling. .card keeps its authored 120x180 box.                 */
+/* ------------------------------------------------------------------ */
+.cardwrap {
+  position: relative;
+  width: calc(120px * var(--k, .5));
+  height: calc(180px * var(--k, .5));
+  flex: 0 0 auto;
+  display: block;
+}
+.cardwrap > .card {
+  position: absolute; top: 0; left: 0;
+  transform: scale(var(--k, .5));
+  transform-origin: top left;
+  transition: none;
+}
+.cardwrap > .card:hover, .cardwrap > .card:focus-visible { transform: scale(var(--k, .5)); }
+.cardwrap.lift { transition: transform .22s cubic-bezier(.2,.8,.3,1); }
+.cardwrap.lift:hover { transform: translateY(-10px); }
+.handrow .cardwrap.playable, .handrow .cardwrap.flexable { transform: translateY(-12px); }
+.handrow .cardwrap.playable:hover, .handrow .cardwrap.flexable:hover { transform: translateY(-20px); }
+.cardwrap.playable::after {
+  content: ""; position: absolute; inset: -3px; border: 2px solid #fff; pointer-events: none;
+  animation: haloIn .2s ease both;
+}
+.cardwrap.flexable::after { content: ""; position: absolute; inset: -3px; border: 2px dashed #fff; pointer-events: none; }
+.handrow .cardwrap.sel, .handrow .cardwrap.sel.playable { transform: translateY(-24px); }
+
+.cardwrap.colorlit::after {
+  content: ""; position: absolute; inset: -4px; pointer-events: none;
+  border: 3px solid var(--lit, transparent);
+  box-shadow: 0 0 18px -4px var(--lit, transparent);
+  transition: border-color .3s ease, box-shadow .3s ease;
+}
+
+.tokwrap { width: calc(120px * var(--k, .25)); height: calc(120px * var(--k, .25)); position: relative; flex: 0 0 auto; }
+.tokwrap > .tok { position: absolute; top: 0; left: 0; transform: scale(var(--k, .25)); transform-origin: top left; }
+.tokwrap > .tok:hover { transform: scale(var(--k, .25)); }
+
+/* ------------------------------------------------------------------ */
+/* Primitives                                                          */
+/* ------------------------------------------------------------------ */
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+  font-size: 13px; font-weight: 600; letter-spacing: .01em;
+  border: 1px solid var(--line2); background: var(--surf); color: var(--ink);
+  padding: 11px 18px;
+  transition: background .18s ease, border-color .18s ease, color .18s ease, transform .1s ease;
+}
+.btn:hover { background: var(--surf2); border-color: var(--mut); }
+.btn:active { transform: translateY(1px); }
+.btn:disabled { opacity: .35; pointer-events: none; }
+.btn.acc { background: var(--acc); border-color: var(--acc); color: #fff; }
+.btn.acc:hover { background: #f26245; border-color: #f26245; }
+.btn.ghost { background: transparent; border-color: var(--line); color: var(--ink2); }
+.btn.ghost:hover { color: var(--ink); border-color: var(--line2); background: var(--surf); }
+.btn.danger { color: #ff6b52; border-color: #58241c; background: transparent; }
+.btn.danger:hover { background: #ff6b52; color: #fff; border-color: #ff6b52; }
+.btn.sm { padding: 7px 12px; font-size: 12px; }
+.btn.xs { padding: 5px 9px; font-size: 11px; }
+
+.input {
+  width: 100%; background: var(--bg2); border: 1px solid var(--line2); color: var(--ink);
+  padding: 13px 15px; font-size: 15px;
+  transition: border-color .18s ease, background .18s ease;
+}
+.input::placeholder { color: var(--mut); }
+.input:focus { outline: none; border-color: var(--acc); background: var(--surf); }
+
+.panel { background: var(--surf); border: 1px solid var(--line); }
+.chip {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: 11px; font-weight: 500; color: var(--ink2);
+  border: 1px solid var(--line); padding: 3px 8px; background: var(--surf);
+}
+.iconbtn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 34px; height: 34px; border: 1px solid var(--line); background: transparent; color: var(--mut);
+  transition: color .18s ease, border-color .18s ease, background .18s ease;
+}
+.iconbtn:hover { color: var(--ink); border-color: var(--line2); background: var(--surf); }
+.iconbtn.on { color: #fff; border-color: #fff; }
+.iconbtn:disabled { opacity: .3; pointer-events: none; }
+
+.swatch { width: 42px; height: 42px; border: 2px solid transparent; transition: transform .14s ease, border-color .14s ease; }
+.swatch:hover { transform: scale(1.1); }
+.swatch.sel { border-color: var(--ink); transform: scale(1.1); }
+
+.sw { width: 38px; height: 20px; border: 1px solid var(--line2); background: var(--bg2); position: relative; flex: 0 0 auto; transition: background .2s ease, border-color .2s ease; }
+.sw i { position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; background: var(--mut); transition: transform .2s cubic-bezier(.3,.8,.3,1), background .2s ease; }
+.sw.on { background: color-mix(in srgb, var(--acc) 26%, transparent); border-color: var(--acc); }
+.sw.on i { transform: translateX(18px); background: var(--acc); }
+
+/* ------------------------------------------------------------------ */
+/* Table                                                               */
+/* ------------------------------------------------------------------ */
+.felt { background: var(--felt); position: relative; }
+
+.seat { background: var(--surf); border: 1px solid var(--line); transition: border-color .25s ease, box-shadow .25s ease, opacity .25s ease; }
+.seat.active { border-color: #fff; box-shadow: 0 0 0 1px #fff, 0 0 24px -10px #fff; }
+.seat.out { opacity: .4; }
+
+.fan { display: flex; align-items: center; }
+
+.rotcard {
+  position: relative;
+  flex: 0 0 auto;
+  width: calc(180px * var(--k));
+  height: calc(120px * var(--k));
+}
+.rotcard > .cardwrap {
+  position: absolute;
+  left: calc(30px * var(--k));
+  top: calc(-30px * var(--k));
+}
+
+/* a static glow under your hand while the turn is yours */
+.handscroll.myturn {
+  background:
+    radial-gradient(120% 90% at 50% 118%, color-mix(in srgb, #fff 24%, transparent) 0%, transparent 70%);
+  box-shadow: inset 0 2px 0 0 #fff, inset 0 -30px 40px -34px #fff;
+}
+:root[data-theme="light"] .handscroll.myturn {
+  /* white reads as nothing on a pale page, so light mode uses a soft slate */
+  background:
+    radial-gradient(120% 90% at 50% 118%, color-mix(in srgb, var(--ink) 13%, transparent) 0%, transparent 70%);
+  box-shadow:
+    inset 0 2px 0 0 color-mix(in srgb, var(--ink) 55%, transparent),
+    inset 0 -30px 40px -34px color-mix(in srgb, var(--ink) 70%, transparent);
+}
+
+.handscroll {
+  overflow-x: auto; overflow-y: hidden;
+  -webkit-overflow-scrolling: touch;
+  touch-action: pan-x;
+  overscroll-behavior-x: contain;
+  scrollbar-width: thin;
+}
+.handrow {
+  display: flex; flex-wrap: nowrap; align-items: flex-end;
+  width: max-content; min-width: 100%;
+  justify-content: center;
+  justify-content: safe center;
+  /* headroom so a raised card is never clipped, tightened on short screens */
+  padding: clamp(16px, 3vh, 26px) 14px calc(clamp(8px, 2vh, 16px) + env(safe-area-inset-bottom, 0px));
+}
+/* cards overlap proportionally to their own scale */
+.handrow > * + * { margin-left: calc(-120px * var(--k-hand) * var(--hand-overlap, .42)); }
+
+.tabfont { font-family: var(--font-anton), "Arial Narrow", sans-serif; letter-spacing: .07em; text-transform: uppercase; }
+
+/* ------------------------------------------------------------------ */
+/* Motion                                                              */
+/* ------------------------------------------------------------------ */
+@keyframes fadeUp { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+@keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+@keyframes popIn { 0% { opacity: 0; transform: scale(.9); } 100% { opacity: 1; transform: scale(1); } }
+@keyframes haloIn { from { opacity: 0; } to { opacity: 1; } }
+@keyframes slideL { from { opacity: 0; transform: translateX(16px); } to { opacity: 1; transform: none; } }
+@keyframes slideR { from { opacity: 0; transform: translateX(-16px); } to { opacity: 1; transform: none; } }
+@keyframes dropIn { 0% { opacity: 0; transform: translateY(-34px) rotate(-8deg) scale(1.06); } 100% { opacity: 1; transform: none; } }
+@keyframes flipBanner { 0% { transform: perspective(900px) rotateY(90deg); opacity: 0; } 22% { transform: perspective(900px) rotateY(0); opacity: 1; } 76% { transform: perspective(900px) rotateY(0); opacity: 1; } 100% { transform: perspective(900px) rotateY(-90deg); opacity: 0; } }
+@keyframes pulseSoft { 0%, 100% { opacity: 1; } 50% { opacity: .38; } }
+@keyframes ringPulse { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--acc) 55%, transparent); } 70% { box-shadow: 0 0 0 18px transparent; } 100% { box-shadow: 0 0 0 0 transparent; } }
+@keyframes shakeX { 0%,100% { transform: translateX(0);} 25% { transform: translateX(-5px);} 50% { transform: translateX(5px);} 75% { transform: translateX(-3px);} }
+
+.a-fade { animation: fadeUp .3s cubic-bezier(.2,.8,.3,1) both; }
+.a-in { animation: fadeIn .25s ease both; }
+.a-pop { animation: popIn .22s cubic-bezier(.2,.9,.3,1.1) both; }
+.a-left { animation: slideL .26s cubic-bezier(.2,.8,.3,1) both; }
+.a-right { animation: slideR .26s cubic-bezier(.2,.8,.3,1) both; }
+.a-drop { animation: dropIn .34s cubic-bezier(.22,.9,.3,1.05) both; }
+.a-shake { animation: shakeX .35s ease; }
+.a-pulse { animation: pulseSoft 1.4s ease-in-out infinite; }
+.flipbanner { animation: flipBanner 1.3s cubic-bezier(.3,.7,.3,1) both; }
+
+.stagger > * { animation: fadeUp .3s cubic-bezier(.2,.8,.3,1) both; }
+.stagger > *:nth-child(1) { animation-delay: .02s }
+.stagger > *:nth-child(2) { animation-delay: .06s }
+.stagger > *:nth-child(3) { animation-delay: .1s }
+.stagger > *:nth-child(4) { animation-delay: .14s }
+.stagger > *:nth-child(5) { animation-delay: .18s }
+.stagger > *:nth-child(6) { animation-delay: .22s }
+.stagger > *:nth-child(7) { animation-delay: .26s }
+.stagger > *:nth-child(8) { animation-delay: .3s }
+
+/* ------------------------------------------------------------------ */
+/* UNO call button                                                     */
+/* ------------------------------------------------------------------ */
+.unobtn {
+  width: 76px; height: 76px; border-radius: 50%;
+  background: var(--acc); color: #fff;
+  font-family: var(--font-anton), sans-serif; font-size: 24px; letter-spacing: .03em;
+  border: 3px solid #fff;
+  animation: ringPulse 1.5s ease-out infinite;
+  transition: transform .12s ease, background .18s ease;
+}
+.unobtn:hover { transform: scale(1.07); }
+.unobtn:active { transform: scale(.94); }
+
+.timerbar { height: 2px; background: var(--acc); transform-origin: left center; }
+
+/* ------------------------------------------------------------------ */
+/* Drag to reorder                                                     */
+/* ------------------------------------------------------------------ */
+.grip { color: var(--mut); cursor: grab; touch-action: none; }
+.grip:hover { color: var(--ink); }
+.grip:active { cursor: grabbing; }
+.dragrow { cursor: grabbing; }
+.lifted {
+  border-color: var(--acc);
+  box-shadow: 0 18px 34px -12px rgba(0, 0, 0, .8), 0 0 0 1px var(--acc);
+  transform: scale(1.025) rotate(-.5deg);
+  transition: transform .14s ease, box-shadow .14s ease;
+}
+.dropslot {
+  border: 1px dashed var(--acc);
+  background: color-mix(in srgb, var(--acc) 9%, transparent);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * { animation-duration: .01ms !important; transition-duration: .01ms !important; }
+}
+@media (max-width: 640px) {
+  .unobtn { width: 62px; height: 62px; font-size: 19px; border-width: 2px; }
+}
+
+:root[data-theme="light"] :focus-visible { outline-color: #fff; box-shadow: 0 0 0 1px rgba(0,0,0,.22); }
+:root[data-theme="light"] .iconbtn.on { color: var(--ink); border-color: #fff; box-shadow: 0 0 0 1px rgba(0,0,0,.18); }
+:root[data-theme="light"] .seat.active { border-color: #fff; box-shadow: 0 0 0 1px rgba(0,0,0,.2), 0 0 20px -12px rgba(0,0,0,.35); }
+
+/* ------------------------------------------------------------------ */
+/* Responsive behaviour                                                */
+/* ------------------------------------------------------------------ */
+
+/* the side panel is a docked column on wide screens and a sheet on phones */
+.sidepanel {
+  position: fixed;
+  right: 0;
+  width: var(--panel-w);
+  display: flex;
+  flex-direction: column;
+  z-index: 40;
+}
+@media (max-width: 719px) {
+  .sidepanel {
+    left: 0;
+    width: auto;
+    top: auto !important;
+    height: min(74dvh, 560px);
+    border-left: none;
+    border-top: 1px solid var(--line);
+  }
+}
+
+/* very short windows, such as a phone held sideways */
+@media (max-height: 520px) {
+  .handrow { padding-top: 12px; padding-bottom: 6px; }
+  .unobtn { width: 52px; height: 52px; font-size: 16px; }
+}
+
+/* a narrow-phone helper breakpoint for optional detail */
+@media (min-width: 390px) { .xs\:inline { display: inline; } }
+@media (max-width: 389px) { .xs\:inline { display: none; } }

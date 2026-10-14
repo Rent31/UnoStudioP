@@ -1,0 +1,49 @@
+/* Exact card CSS from Rent31/misc blob 338751386e15c546c2ce7e77fad260094310eec9. */
+.card{--c:#111;position:relative;width:120px;height:180px;border-radius:0;border:4px solid var(--c);overflow:hidden;font-weight:800;
+ background:var(--c);
+ box-shadow:0 0 0 1px rgba(0,0,0,.45),0 16px 26px -12px rgba(0,0,0,.65);transition:transform .15s}
+.card:hover,.card:focus-visible{transform:translateY(-6px);outline:none}
+.card:focus-visible{box-shadow:0 0 0 3px #3d8bff}
+.card::before{content:"";position:absolute;inset:13% -16%;border-radius:50%;background:color-mix(in srgb,var(--c) 14%,#17181e);transform:rotate(-28deg);box-shadow:inset 0 0 0 3px color-mix(in srgb,var(--c) 85%,#000)}
+.card::after{content:"";position:absolute;inset:5px;border:1.5px solid rgba(255,255,255,.35);pointer-events:none;z-index:2}
+.card.wild{--c:#111;border-color:#111;background:#15161b;box-shadow:0 0 0 1px rgba(255,255,255,.12),0 16px 26px -12px rgba(0,0,0,.65)}
+.card.wild::before{background:radial-gradient(closest-side,#17181e 79%,transparent 80%),conic-gradient(#e63b1f 0 25%,#1565d8 0 50%,#34a853 0 75%,#f2c200 0);box-shadow:none}
+.card.plain::before{background:conic-gradient(#e63b1f 0 25%,#1565d8 0 50%,#34a853 0 75%,#f2c200 0);box-shadow:inset 0 0 0 3px #fff}
+.card.wild::after{border-color:rgba(255,255,255,.14)}
+.card.wild.dk::before{background:radial-gradient(closest-side,#17181e 79%,transparent 80%),conic-gradient(#e84a9a 0 25%,#1fb5a8 0 50%,#f28c28 0 75%,#8a4fd0 0)}
+.card.plain.dk::before{background:conic-gradient(#e84a9a 0 25%,#1fb5a8 0 50%,#f28c28 0 75%,#8a4fd0 0);box-shadow:inset 0 0 0 3px #fff}
+.card.fx{border-color:var(--c);background:radial-gradient(rgba(0,0,0,.65) 1.8px,transparent 2.4px) 0 0/11px 11px,var(--c2)}
+.card.fx::before{box-shadow:inset 0 0 0 3px var(--c)}
+.card.lt::before{background:color-mix(in srgb,var(--c) 12%,#fff);box-shadow:inset 0 0 0 3px var(--c)}
+.card.lt .s{color:color-mix(in srgb,var(--c) 88%,#000)}
+.dual{display:flex;flex-direction:column;align-items:center;gap:3px}
+.dual .r{display:flex;align-items:center;gap:4px;line-height:1}
+.dual .t{font-size:16px;font-weight:900}
+.dual .tg{font-size:8px;letter-spacing:.14em;opacity:.8}
+.dual .dv{display:block;width:46px;height:2px;background:currentColor;opacity:.3}
+.wc{display:block;width:26px;height:26px;border-radius:50%;background:conic-gradient(#e63b1f 0 25%,#1565d8 0 50%,#34a853 0 75%,#f2c200 0)}
+.card.wild.fa{background:repeating-linear-gradient(45deg,rgba(255,255,255,.2) 0 3px,transparent 3px 9px),#15161b}
+.card.fa:not(.wild){border-color:var(--c);background:radial-gradient(rgba(0,0,0,.65) 1.8px,transparent 2.4px) 0 0/11px 11px,var(--c)}
+.card.fa:not(.wild)::before{box-shadow:inset 0 0 0 3px var(--c)}
+.nn{position:relative;display:block;font-weight:900;font-size:66px;line-height:.8;transform:skewX(-6deg)}
+.fi{position:absolute;left:50%;top:100%;margin-top:12px;transform:translateX(-50%) skewX(6deg)}
+.card.dks .c{color:#17181e}
+.tok{position:relative;width:120px;height:120px;border-radius:50%;border:4px solid var(--c);display:grid;place-items:center;color:color-mix(in srgb,var(--c) 82%,#fff);background:var(--c);box-shadow:0 0 0 1px rgba(0,0,0,.45),0 16px 26px -12px rgba(0,0,0,.65);transition:transform .15s}
+.tok:hover,.tok:focus-visible{transform:translateY(-6px);outline:none}
+.tok::before{content:"";position:absolute;inset:12px;border-radius:50%;background:color-mix(in srgb,var(--c) 14%,#17181e);box-shadow:inset 0 0 0 3px color-mix(in srgb,var(--c) 85%,#000)}
+.tok::after{content:"";position:absolute;inset:4px;border-radius:50%;border:1.5px dashed rgba(255,255,255,.45)}
+.tok svg{position:relative;z-index:1}
+.w em{display:block;font-style:normal;font-weight:600;font-size:11px;opacity:.7;margin-top:1px}
+.nav{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 4px}
+.nav a{padding:7px 14px;border:1px solid var(--mut);color:var(--fg);text-decoration:none;font-size:13px;font-weight:700}
+.nav a:hover{background:var(--fg);color:var(--bg)}
+.s{position:absolute;inset:0;z-index:1;display:flex;flex-direction:column;align-items:center;justify-content:center;color:color-mix(in srgb,var(--c) 82%,#fff);font-size:66px;line-height:1}
+.s svg{display:block;overflow:visible}
+.s.n{font-weight:900;transform:skewX(-6deg);line-height:.8}
+.s .u{text-decoration:underline;text-decoration-thickness:5px;text-underline-offset:4px}
+.wild .s,.wild .c{color:#fff}
+.s .dn{font-size:30px;font-weight:900;margin-top:2px}
+.s .sm{font-size:12px;font-weight:800;letter-spacing:.06em;margin-top:3px}
+.c{color:#fff;position:absolute;z-index:3;font-size:16px;line-height:1;font-weight:800}
+.c svg{display:block}
+.tl{top:9px;left:10px}.br{bottom:9px;right:10px;transform:rotate(180deg)}
