@@ -885,7 +885,13 @@ export function actPlay(s: RoomState, playerId: string, cardId: string, opts: Pl
         log(s, "play", `${p.name} played ${labelOf(s, f)}.`, { card: f, actor: p.name });
         if (s.variant === "nomercy") {
           if (f.value === "7") {
-            const t = target();
+            let t = target();
+            // the swap is not optional, so a play that arrives without a name
+            // on it still trades hands - with the next player in turn order
+            if (!t || t.id === p.id || t.left || t.eliminated) {
+              const from = s.players.findIndex((x) => x.id === p.id);
+              t = s.players[nextIdx(s, from < 0 ? 0 : from, 1)];
+            }
             if (t && t.id !== p.id && !t.left && !t.eliminated && p.hand.length > 0) {
               const tmp = p.hand; p.hand = t.hand; t.hand = tmp;
               s.unoRace = null;

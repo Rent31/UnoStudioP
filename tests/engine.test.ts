@@ -599,5 +599,38 @@ ok(buildAllWildDeck().every((c) => c.light.color === "wild"), "every all wild ca
     "election: an older copy never replaces a newer one");
 }
 
+// ---------------- no mercy: a 7 always trades hands
+{
+  const s = rig(["A", "B", "C"], "nomercy");
+  const a = s.players[0], b = s.players[1], c = s.players[2];
+  const seven = mk({ color: "red", value: "7" });
+  a.hand = [seven, mk({ color: "blue", value: "3" }), mk({ color: "green", value: "9" })];
+  const bCards = b.hand.map((x) => x.id);
+  const aCards = a.hand.slice(1).map((x) => x.id);
+
+  // named target
+  actPlay(s, a.id, seven.id, { targetId: b.id });
+  ok(b.hand.map((x) => x.id).join() === aCards.join(), "no mercy 7: the named player takes your hand");
+  ok(a.hand.map((x) => x.id).join() === bCards.join(), "no mercy 7: you take theirs");
+
+  // nobody named: the swap still happens, so it cannot be dodged
+  const s2 = rig(["A", "B", "C"], "nomercy");
+  const a2 = s2.players[0], b2 = s2.players[1];
+  const seven2 = mk({ color: "red", value: "7" });
+  a2.hand = [seven2, mk({ color: "blue", value: "3" })];
+  const b2Cards = b2.hand.map((x) => x.id);
+  actPlay(s2, a2.id, seven2.id, {});
+  ok(a2.hand.map((x) => x.id).join() === b2Cards.join(), "no mercy 7: an unnamed swap trades with the next player");
+
+  // a 7 in a variant where it is just a number leaves hands alone
+  const s3 = rig(["A", "B", "C"], "classic");
+  const a3 = s3.players[0], b3 = s3.players[1];
+  const seven3 = mk({ color: "red", value: "7" });
+  a3.hand = [seven3, mk({ color: "blue", value: "3" })];
+  const b3Cards = b3.hand.map((x) => x.id);
+  actPlay(s3, a3.id, seven3.id, {});
+  ok(b3.hand.map((x) => x.id).join() === b3Cards.join(), "no mercy 7: other variants keep their hands");
+}
+
 console.log(failures === 0 ? "ALL TESTS PASSED" : failures + " FAILURES");
 process.exit(failures ? 1 : 0);

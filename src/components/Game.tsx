@@ -201,7 +201,8 @@ export default function Game({ code, view, meId, act, onLeave }: {
     if (needsColor && !selColor) { playSound("error"); return; }
     const useFlex = !!sel.flexPlayable || selFlex;
     const effVal = useFlex && sel.flexValue ? sel.flexValue : f.value;
-    const hardTarget = effVal === "wildSwap" || effVal === "wildTargetDraw2" || effVal === "targetDraw2" || effVal === "targetDraw4";
+    const hardTarget = effVal === "wildSwap" || effVal === "wildTargetDraw2" || effVal === "targetDraw2" ||
+      effVal === "targetDraw4" || (effVal === "7" && view.variant === "nomercy" && liveOpponents.length > 0);
     if (hardTarget && !selTarget) { playSound("error"); return; }
     act("play", { cardId: sel.id, color: needsColor ? selColor : undefined, targetId: selTarget ?? undefined, useFlex: useFlex || undefined });
     setSel(null);
@@ -210,7 +211,11 @@ export default function Game({ code, view, meId, act, onLeave }: {
   const selFace = sel ? faceOf(view, sel) : null;
   const selEff = sel && (selFlex && sel.flexValue ? sel.flexValue : selFace?.value);
   const selWantsTarget = !!sel && needsTargetFor(sel, selFlex || !!sel.flexPlayable);
-  const selOptionalTarget = selEff === "7" || selEff === "skip";
+  const liveOpponents = opponents.filter((o) => !o.eliminated);
+  // No Mercy forces the swap: there is no keeping your hand unless there is
+  // genuinely nobody left to trade with
+  const forcedSwap = selEff === "7" && view.variant === "nomercy" && liveOpponents.length > 0;
+  const selOptionalTarget = selEff === "skip" || (selEff === "7" && !forcedSwap);
 
   const status = (() => {
     if (view.phase !== "playing") return "";
@@ -444,7 +449,7 @@ export default function Game({ code, view, meId, act, onLeave }: {
               {selWantsTarget && (
                 <div className="flex items-center gap-1.5 flex-wrap">
                   <span className="lbl w-12">{selEff === "7" ? "Swap" : selEff === "skip" ? "Skip" : "Target"}</span>
-                  {opponents.filter((o) => !o.eliminated).map((o) => (
+                  {liveOpponents.map((o) => (
                     <button key={o.id} className={`btn xs ${selTarget === o.id ? "acc" : "ghost"}`} onClick={() => { setSelTarget(o.id); playSound("click"); }}>{o.name}</button>
                   ))}
                   {selOptionalTarget && (
