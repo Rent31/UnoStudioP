@@ -100,7 +100,11 @@ export default function Game({ code, view, meId, act, onLeave }: {
   // simply fills the left and top slots and leaves the rest empty.
   const pageCount = Math.max(1, Math.ceil(opponents.length / 3));
   const page = Math.min(off, pageCount - 1);
-  const ring = opponents.slice(page * 3, page * 3 + 3);
+  // With only one opponent there is no left/right ring to speak of: park them
+  // at the top of the table instead of off to one side.
+  const ring: (PlayerView | undefined)[] = opponents.length === 1
+    ? [undefined, opponents[0], undefined]
+    : opponents.slice(page * 3, page * 3 + 3);
   const outside = opponents.filter((p) => !ring.includes(p));
 
   const isFlip = view.variant === "flip";
@@ -128,6 +132,8 @@ export default function Game({ code, view, meId, act, onLeave }: {
       if (e.type === "flip" && !e.msg.includes("token")) setBanner(view.side === "dark" ? "Dark side" : "Light side");
       if (e.type === "catch") setBanner("Caught");
       if (e.type === "eliminate") setBanner("Knocked out");
+      // a successful UNO call is loud: banner, badge on the seat, and the sound
+      if (e.type === "uno") setBanner(`${e.actor ?? "Someone"} called UNO`);
     }
   }, [view.events, view.side]);
   useEffect(() => {
@@ -260,6 +266,7 @@ export default function Game({ code, view, meId, act, onLeave }: {
               className={`chip shrink-0 ${p.isTurn ? "!border-white !text-[var(--gold)]" : ""} ${p.eliminated ? "opacity-40 line-through" : ""} ${p.id === meId ? "!text-[var(--ink)] font-semibold" : ""}`}
             >
               {p.name}<span className="text-[var(--mut)]">{p.cardCount}</span>
+              {p.calledUno && !p.eliminated && p.cardCount > 0 && <span className="unotag !ml-0.5">UNO</span>}
             </span>
           </span>
         ))}
@@ -628,6 +635,7 @@ function Seat({ p, edge, view, isFlip, isFlex }: {
         {p.isAdmin && !p.isOwner && <Shield size={9} className="text-[var(--gold)] shrink-0" />}
         {p.isBot && <Bot size={10} className="text-[var(--mut)] shrink-0" />}
         {isFlex && <span className={`w-1.5 h-1.5 shrink-0 ${p.powerGreen ? "bg-[var(--grn)]" : "bg-[var(--acc)]"}`} />}
+        {p.calledUno && !p.eliminated && count > 0 && <span className="unotag shrink-0">UNO</span>}
         <span className="text-[11px] text-[var(--mut)] shrink-0">{count}</span>
       </div>
 

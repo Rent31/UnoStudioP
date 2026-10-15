@@ -27,6 +27,7 @@ export interface PlayerView {
   score: number;
   wins: number;
   powerGreen: boolean;
+  calledUno: boolean;
   isTurn: boolean;
   hand?: HandCardView[];
   otherSide?: Face[];

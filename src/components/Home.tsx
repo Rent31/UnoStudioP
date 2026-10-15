@@ -65,7 +65,8 @@ export default function Home() {
               <i style={{ background: "#1565d8" }} />
               <i style={{ background: "#34a853" }} />
             </span>
-            <span className="disp brand-uno">UNOshima</span>
+            <span className="disp brand-uno">UNO</span>
+            <span className="brand-shima">shima</span>
           </div>
 
           <input

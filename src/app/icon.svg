@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="UNOshima">
+  <!-- the four deck colours, laid out like the brand mark on the home page -->
+  <g transform="rotate(45 16 16)">
+    <rect x="5.5" y="5.5" width="10" height="10" fill="#e63b1f" />
+    <rect x="16.5" y="5.5" width="10" height="10" fill="#f2c200" />
+    <rect x="5.5" y="16.5" width="10" height="10" fill="#1565d8" />
+    <rect x="16.5" y="16.5" width="10" height="10" fill="#34a853" />
+  </g>
+</svg>

@@ -156,7 +156,9 @@ export function createRoomState(variant: Variant): RoomState {
   };
 }
 
-const SILENT_EVENTS = new Set(["uno"]);
+// Event types that stay off the shared log. UNO calls used to be silent, but
+// the whole table has to hear about a successful call, so they are announced.
+const SILENT_EVENTS = new Set<string>([]);
 
 export function log(
   s: RoomState, type: string, msg: string,
@@ -1063,7 +1065,7 @@ export function actUno(s: RoomState, playerId: string): string | null {
     if (target && target.id === p.id) {
       p.calledUno = true;
       s.unoRace = null;
-      log(s, "uno", `${p.name} calls UNO in time.`);
+      log(s, "uno", `${p.name} calls UNO in time.`, { actor: p.name });
       touch(s);
       return null;
     }
@@ -1071,7 +1073,7 @@ export function actUno(s: RoomState, playerId: string): string | null {
 
   if (p.hand.length === 2 || p.hand.length === 1) {
     p.calledUno = true;
-    log(s, "uno", `${p.name} calls UNO.`);
+    log(s, "uno", `${p.name} calls UNO.`, { actor: p.name });
     touch(s);
     return null;
   }
@@ -1605,7 +1607,7 @@ function playCardAsBot(s: RoomState, bot: PlayerState, card: GameCard, useFlex: 
     (eff === "skip" && s.rules.targetedSkip);
   if (bot.hand.length === 2 && !bot.calledUno) {
     bot.calledUno = true;
-    log(s, "uno", `${bot.name} calls UNO.`);
+    log(s, "uno", `${bot.name} calls UNO.`, { actor: bot.name });
   }
   actPlay(s, bot.id, card.id, {
     color: needsColor ? colorModes(bot.hand, s) : undefined,
@@ -1631,7 +1633,7 @@ function maybeBotCatch(s: RoomState): boolean {
   const target = findPlayer(s, race.playerId);
   if (target?.isBot) {
     // bots cover for themselves most of the time
-    if (Math.random() < 0.7) { target.calledUno = true; s.unoRace = null; log(s, "uno", `${target.name} calls UNO.`); return true; }
+    if (Math.random() < 0.7) { target.calledUno = true; s.unoRace = null; log(s, "uno", `${target.name} calls UNO.`, { actor: target.name }); return true; }
   }
   if (Math.random() < 0.55) {
     const b = bots[Math.floor(Math.random() * bots.length)];
@@ -1734,6 +1736,7 @@ export function buildView(s: RoomState, forPlayerId: string | null, version: num
       connected: p.connected, left: p.left, eliminated: p.eliminated,
       cardCount: p.hand.length, score: p.score, wins: p.wins,
       powerGreen: p.powerGreen,
+      calledUno: !!p.calledUno,
       isTurn: s.phase === "playing" && s.players[s.turn.playerIdx]?.id === p.id,
     };
     if (mine) {

@@ -255,7 +255,7 @@ ok(buildAllWildDeck().every((c) => c.light.color === "wild"), "every all wild ca
   ok(s.players.length === 4, "random order keeps every seat");
 }
 
-// ---------------- uno state never leaks into the view
+// ---------------- a successful uno call is public, everything else stays hidden
 {
   const s = rig(["A", "B"], "classic");
   const a = s.players[0], b = s.players[1];
@@ -265,8 +265,17 @@ ok(buildAllWildDeck().every((c) => c.light.color === "wild"), "every all wild ca
   const v = buildView(s, b.id, 1, 0) as Record<string, unknown>;
   ok(v.unoRace === null, "view never exposes an open uno race");
   const pl = (v.players as Record<string, unknown>[]).find((x) => x.id === a.id)!;
-  ok(!("calledUno" in pl) && !("vulnerable" in pl), "view never exposes uno flags");
+  ok(pl.calledUno === false, "a player who has not called is not flagged as safe");
+  ok(!("vulnerable" in pl), "view never exposes a vulnerability flag");
   ok(!(v.events as {type:string}[]).some((e) => e.type === "uno"), "uno calls stay out of the log");
+
+  actUno(s, a.id);
+  const v2 = buildView(s, b.id, 1, 0) as Record<string, unknown>;
+  const pl2 = (v2.players as Record<string, unknown>[]).find((x) => x.id === a.id)!;
+  ok(pl2.calledUno === true, "a successful uno call is visible to every player");
+  ok(!pl2.hand, "the caller's hand is still hidden");
+  const call = (v2.events as {type:string; actor?:string}[]).find((e) => e.type === "uno");
+  ok(!!call && call.actor === "A", "the call is announced in the log with the caller's name");
 }
 
 // ---------------- chat
