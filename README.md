@@ -1,4 +1,4 @@
-# UNO Studio
+# UNOshima
 
 Database-free peer-to-peer multiplayer UNO for Vercel.
 

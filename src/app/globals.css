@@ -94,24 +94,13 @@
 .brand-mark i { display: block; }
 
 .brand-uno {
-  font-size: 56px;
-  line-height: .84;
-  letter-spacing: .035em;
-  text-indent: .035em;
+  font-size: min(50px, 12.5vw);
+  white-space: nowrap;
+  line-height: .9;
+  letter-spacing: .02em;
+  text-indent: .02em;
   animation: fadeUp .45s cubic-bezier(.2,.8,.3,1) both;
   animation-delay: .1s;
-}
-
-.brand-studio {
-  font-family: var(--font-jbmono), ui-monospace, monospace;
-  font-size: 10.5px;
-  font-weight: 500;
-  letter-spacing: .52em;
-  text-indent: .52em;
-  color: var(--mut);
-  margin-top: 9px;
-  animation: fadeUp .45s cubic-bezier(.2,.8,.3,1) both;
-  animation-delay: .18s;
 }
 
 @keyframes markIn {
@@ -122,8 +111,7 @@
 @media (max-width: 420px) {
   .brand { margin-bottom: 28px; }
   .brand-mark { width: 44px; height: 44px; margin-bottom: 25px; }
-  .brand-uno { font-size: 44px; }
-  .brand-studio { font-size: 9.5px; letter-spacing: .42em; text-indent: .42em; }
+  .brand-uno { font-size: 38px; }
 }
 
 /* ------------------------------------------------------------------ */

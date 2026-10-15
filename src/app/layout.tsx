@@ -8,7 +8,7 @@ const anton = Anton({ weight: "400", subsets: ["latin"], variable: "--font-anton
 const jbmono = JetBrains_Mono({ subsets: ["latin"], variable: "--font-jbmono" });
 
 export const metadata: Metadata = {
-  title: "UNO",
+  title: "UNOshima",
   description: "Classic, No Mercy, Flip, Flex and All Wild with friends or bots.",
 };
 
