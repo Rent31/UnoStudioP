@@ -10,9 +10,11 @@ import {
   clearSession,
   loadHostIntent,
   loadHostState,
+  loadMirror,
   loadPendingName,
   loadSession,
   saveHostState,
+  saveMirror,
   saveName,
   savePendingName,
   saveSession,
@@ -24,10 +26,19 @@ import {
   buildView,
   createRoomState,
   findPlayer,
+  setHost,
   tick,
   type RoomState,
 } from "@/lib/game/engine";
 import { DEFAULT_RULES } from "@/lib/game/model";
+import {
+  HOST_TTL_MS,
+  isBetterHost,
+  isNewerState,
+  pickHost,
+  PRESENCE_INTERVAL_MS,
+  type HostCandidate,
+} from "@/lib/host";
 import { dispatchGameCommand, type GameCommand } from "@/lib/game/dispatch";
 import Lobby from "@/components/Lobby";
 import Game from "@/components/Game";
@@ -39,7 +50,8 @@ export interface ActFn {
 interface HostBundle {
   state: RoomState;
   version: number;
-  ownerPid: string;
+  /** the player this browser is, which is not always the owner any more */
+  localPid: string;
 }
 
 interface JoinMessage {
@@ -51,10 +63,21 @@ interface JoinMessage {
 interface WelcomeMessage {
   session: Session;
   view: ViewData;
+  joinedAt?: number;
+}
+
+interface MirrorMessage {
+  state: RoomState;
+  version: number;
 }
 
 const APP_ID = "uno-studio-p2p-v1";
 const MAX_PLAYERS = 10;
+const SELF = "self";
+/** how long the owner waits for a live host before taking their own room back */
+const CLAIM_DELAY_MS = 1200;
+/** safety valve: take the room if an outranked host never hands it over */
+const OUTRANK_PATIENCE_MS = 5000;
 
 const SOUND_RANK: Record<string, number> = {
   win: 100, eliminate: 90, catch: 85, flip: 80, roulette: 70, stack: 65,
@@ -69,8 +92,12 @@ function normalizeState(state: RoomState): RoomState {
   state.chatSeq ??= 0;
   state.events ??= [];
   state.players ??= [];
+  state.hostId ??= null;
+  let stamp = 0;
   for (const p of state.players) {
     p.wins ??= 0;
+    p.spectator ??= false;
+    p.joinedAt ??= ++stamp;
     p.connected = false;
   }
   return state;
@@ -90,14 +117,23 @@ export default function RoomClient({ code }: { code: string }) {
   const [name, setName] = useState("");
   const [joinBusy, setJoinBusy] = useState(false);
   const [joinErr, setJoinErr] = useState("");
+  const [isHost, setIsHost] = useState(false);
 
   const sessionRef = useRef<Session | null>(null);
   const viewRef = useRef<ViewData | null>(null);
   const stateRef = useRef<RoomState | null>(null);
   const versionRef = useRef(-1);
-  const ownerPidRef = useRef("");
   const isHostRef = useRef(false);
   const hostPeerRef = useRef<string | null>(null);
+  // the newest copy of the room this browser has seen, used to take over
+  const mirrorRef = useRef<MirrorMessage | null>(null);
+  const presenceRef = useRef(new Map<string, HostCandidate>());
+  const hostBeatRef = useRef<{ peerId: string; pid: string; joinedAt: number; at: number } | null>(null);
+  const joinedAtRef = useRef<number>(Number.MAX_SAFE_INTEGER);
+  const outrankSinceRef = useRef<number>(0);
+  const publishAllRef = useRef<(() => void) | null>(null);
+  const stopHostingRef = useRef<(() => void) | null>(null);
+  const handoffRef = useRef<(() => void) | null>(null);
   const roomRef = useRef<{ leave: () => Promise<void> } | null>(null);
   const peerPlayers = useRef(new Map<string, string>());
   const peerSeq = useRef(new Map<string, number>());
@@ -149,8 +185,12 @@ export default function RoomClient({ code }: { code: string }) {
     let tickTimer: ReturnType<typeof setInterval>;
     let snapshotTimer: ReturnType<typeof setInterval>;
     let helloTimer: ReturnType<typeof setInterval>;
+    let mirrorTimer: ReturnType<typeof setInterval>;
+    let presenceTimer: ReturnType<typeof setInterval>;
+    let monitorTimer: ReturnType<typeof setInterval>;
     let joinTimer: ReturnType<typeof setInterval>;
     let heartbeatTimer: ReturnType<typeof setInterval>;
+    let claimTimer: ReturnType<typeof setTimeout>;
     let noHostTimer: ReturnType<typeof setTimeout>;
 
     initSoundPref();
@@ -159,52 +199,146 @@ export default function RoomClient({ code }: { code: string }) {
     desiredName.current = loadPendingName(code) || storedSession?.name || savedName();
     setName(desiredName.current);
 
+    interface RoomAction {
+      send: (data: unknown, opts?: { target?: string }) => Promise<unknown>;
+      onMessage: ((data: any, meta: { peerId: string }) => void) | null;
+    }
+    // the wire actions are created once the peer room opens, but the host
+    // switchover above needs them, so they live out here
+    let hostHello!: RoomAction;
+    let presenceAction!: RoomAction;
+    let mirrorAction!: RoomAction;
+    let handoffAction!: RoomAction;
     let bundle: HostBundle | null = null;
+    const restoredMirror = loadMirror<MirrorMessage>(code);
+    if (restoredMirror?.state) {
+      mirrorRef.current = { state: normalizeState(restoredMirror.state), version: restoredMirror.version ?? 1 };
+    }
 
     const saveBundle = () => {
       if (!bundle) return;
       saveHostState(code, bundle);
+      saveMirror(code, { state: bundle.state, version: bundle.version });
+    };
+
+    const keepMirror = (state: RoomState, version: number) => {
+      const current = mirrorRef.current;
+      if (current && !isNewerState(state, current.state)) return;
+      mirrorRef.current = { state, version };
+      saveMirror(code, { state, version });
+    };
+
+    const selfJoinedAt = () => {
+      const pid = sessionRef.current?.pid;
+      if (!pid) return Number.MAX_SAFE_INTEGER;
+      const from = mirrorRef.current?.state ?? bundle?.state;
+      const me = from ? findPlayer(from, pid) : undefined;
+      if (me?.joinedAt) return me.joinedAt;
+      return joinedAtRef.current;
+    };
+
+    const selfCandidate = (): HostCandidate | null => {
+      const pid = sessionRef.current?.pid;
+      if (!pid) return null;
+      return {
+        pid,
+        peerId: SELF,
+        joinedAt: selfJoinedAt(),
+        canHost: !!(mirrorRef.current || bundle),
+        at: Date.now(),
+      };
     };
 
     const localView = (since = soundSeq.current) => {
       if (!bundle) return null;
-      return buildView(bundle.state, bundle.ownerPid, bundle.version, since) as unknown as ViewData;
+      return buildView(bundle.state, bundle.localPid, bundle.version, since) as unknown as ViewData;
     };
 
-    if (hostIntent) {
+    const stopHosting = () => {
+      clearInterval(tickTimer);
+      clearInterval(snapshotTimer);
+      clearInterval(helloTimer);
+      clearInterval(mirrorTimer);
+      if (!isHostRef.current) return;
+      isHostRef.current = false;
+      setIsHost(false);
+      setNetworkNote("");
+    };
+    stopHostingRef.current = stopHosting;
+
+    const startHosting = (state: RoomState, version: number, localPid: string) => {
+      versionRef.current = -1;
+      soundSeq.current = 0;
+      firstView.current = true;
+      bundle = { state, version, localPid };
+      stateRef.current = state;
+      setHost(state, localPid);
+      const me = findPlayer(state, localPid);
+      if (me) { me.connected = true; me.lastSeen = Date.now(); }
       isHostRef.current = true;
-      const restored = loadHostState<HostBundle>(code);
-      if (restored?.state) {
-        bundle = {
-          state: normalizeState(restored.state),
-          version: Math.max(1, restored.version ?? 1),
-          ownerPid: restored.ownerPid,
-        };
-      } else {
-        const state = createRoomState("classic");
-        const owner = addPlayer(state, hostIntent.name, false);
-        bundle = { state, version: 1, ownerPid: owner.id };
-      }
-      stateRef.current = bundle.state;
-      ownerPidRef.current = bundle.ownerPid;
-      const owner = findPlayer(bundle.state, bundle.ownerPid) ?? bundle.state.players.find((p) => p.isOwner);
-      if (owner) {
-        bundle.ownerPid = owner.id;
-        owner.connected = true;
-        owner.lastSeen = Date.now();
-        const ownerSession = { pid: owner.id, tok: owner.token, name: owner.name };
-        saveSession(code, ownerSession);
-        sessionRef.current = ownerSession;
-        setSession(ownerSession);
-        const v = localView(0);
-        if (v) acceptView(v);
-      }
+      setIsHost(true);
+      joinedAtRef.current = me?.joinedAt ?? joinedAtRef.current;
+      hostBeatRef.current = { peerId: SELF, pid: localPid, joinedAt: joinedAtRef.current, at: Date.now() };
+      outrankSinceRef.current = 0;
+      keepMirror(state, version);
       saveBundle();
-      setNetworkNote("Room is live from this browser");
-    } else {
-      sessionRef.current = storedSession;
-      setSession(storedSession);
-    }
+
+      clearInterval(joinTimer);
+      clearInterval(heartbeatTimer);
+      tickTimer = setInterval(() => {
+        if (!bundle) return;
+        const self = findPlayer(bundle.state, bundle.localPid);
+        if (self) { self.connected = true; self.lastSeen = Date.now(); }
+        if (tick(bundle.state)) {
+          bundle.version += 1;
+          publishAllRef.current?.();
+        }
+      }, 300);
+      snapshotTimer = setInterval(() => publishAllRef.current?.(), 1000);
+      helloTimer = setInterval(() => {
+        hostHello.send({ live: true, hostPid: bundle?.localPid, joinedAt: joinedAtRef.current }).catch(() => {});
+        if (bundle) hostBeatRef.current = { peerId: SELF, pid: bundle.localPid, joinedAt: joinedAtRef.current, at: Date.now() };
+      }, 2000);
+      mirrorTimer = setInterval(() => { if (bundle) mirrorAction.send({ state: bundle.state, version: bundle.version }).catch(() => {}); }, 2000);
+      const v = localView(0);
+      if (v) acceptView(v);
+      hostHello.send({ live: true, hostPid: localPid, joinedAt: joinedAtRef.current }).catch(() => {});
+      mirrorAction.send({ state, version }).catch(() => {});
+      publishAllRef.current?.();
+    };
+
+    // The phone suspended us, or the tab was thrown away: leave the freshest
+    // copy behind so whoever takes over is not behind.
+    const onHide = () => {
+      if (isHostRef.current && bundle) {
+        mirrorAction?.send({ state: bundle.state, version: bundle.version }).catch(() => {});
+        saveBundle();
+      }
+    };
+    window.addEventListener("pagehide", onHide);
+
+    // hand the live room to the next browser in line, used when this one
+    // steps out on purpose as well as when it is outranked
+    const handoffToNext = () => {
+      if (!bundle) return;
+      const now = Date.now();
+      const others = [...presenceRef.current.values()].filter((c) => c.peerId !== SELF);
+      const best = pickHost(others, now);
+      if (!best) return;
+      handoffAction.send({ state: bundle.state, version: bundle.version }, { target: best.peerId }).catch(() => {});
+    };
+    handoffRef.current = handoffToNext;
+
+    const claimHost = () => {
+      if (isHostRef.current) return;
+      const m = mirrorRef.current;
+      const pid = sessionRef.current?.pid;
+      if (!m || !pid) return;
+      const state = normalizeState(m.state);
+      if (!findPlayer(state, pid)) return;
+      startHosting(state, Math.max(1, (m.version ?? 1) + 1), pid);
+      setNetworkNote("");
+    };
 
     (async () => {
       const { joinRoom } = await import("trystero");
@@ -226,11 +360,14 @@ export default function RoomClient({ code }: { code: string }) {
       );
       roomRef.current = room;
 
-      const hostHello = room.makeAction<any>("host");
+      hostHello = room.makeAction<any>("host") as unknown as RoomAction;
+      presenceAction = room.makeAction<any>("presence") as unknown as RoomAction;
       const joinAction = room.makeAction<any>("join");
       const welcomeAction = room.makeAction<any>("welcome");
       const commandAction = room.makeAction<any>("command");
       const snapshotAction = room.makeAction<any>("snapshot");
+      mirrorAction = room.makeAction<any>("mirror") as unknown as RoomAction;
+      handoffAction = room.makeAction<any>("handoff") as unknown as RoomAction;
       const errorAction = room.makeAction<any>("error");
       const closedAction = room.makeAction<any>("closed");
 
@@ -251,6 +388,7 @@ export default function RoomClient({ code }: { code: string }) {
           const data: WelcomeMessage = {
             session: { pid: player.id, tok: player.token, name: player.name },
             view: peerView,
+            joinedAt: player.joinedAt,
           };
           welcomeAction.send(data, { target: peerId }).catch(() => {});
         } else {
@@ -263,6 +401,7 @@ export default function RoomClient({ code }: { code: string }) {
         persistAndLocalView();
         for (const [peerId, pid] of peerPlayers.current) sendViewTo(peerId, pid);
       };
+      publishAllRef.current = publishAll;
 
       const runCommand = (pid: string, command: GameCommand, peerId?: string) => {
         if (!bundle) return;
@@ -294,33 +433,71 @@ export default function RoomClient({ code }: { code: string }) {
 
       // Host announces itself. A participant sends credentials only to the
       // peer that made this announcement, never to the rest of the mesh.
-      hostHello.onMessage = (_data, { peerId }) => {
-        if (isHostRef.current) return;
-        hostPeerRef.current = peerId;
-        setNetworkNote(viewRef.current ? "" : "Joining owner…");
-        sendJoinRef.current?.();
+      hostHello.onMessage = (data: any, { peerId }: { peerId: string }) => {
+        if (data?.hostPid === sessionRef.current?.pid) return;
+        const now = Date.now();
+        const prev = hostBeatRef.current;
+        const incoming = { peerId, pid: String(data?.hostPid ?? ""), joinedAt: Number(data?.joinedAt ?? Number.MAX_SAFE_INTEGER), at: now };
+        const takeOver = !prev || prev.pid === incoming.pid || prev.peerId === peerId ||
+          now - prev.at > HOST_TTL_MS || isBetterHost(incoming, prev);
+        if (!takeOver) return;
+        if (prev?.pid !== incoming.pid) {
+          // different host, different version numbering: start over rather
+          // than dropping everything they send as "too old"
+          versionRef.current = -1;
+          soundSeq.current = 0;
+          firstView.current = true;
+        }
+        hostBeatRef.current = incoming;
+        if (!isHostRef.current) {
+          if (hostPeerRef.current !== peerId) {
+            hostPeerRef.current = peerId;
+            sendJoinRef.current?.();
+          }
+          setNetworkNote(viewRef.current ? "" : "Joining the room…");
+        }
       };
 
-      joinAction.onMessage = (data: JoinMessage, { peerId }) => {
+      // Everybody says who they are, so the room can always work out who
+      // should be running it without anybody being in charge of the answer.
+      presenceAction.onMessage = (data: HostCandidate, { peerId }: { peerId: string }) => {
+        if (!data?.pid || data.pid === sessionRef.current?.pid) return;
+        presenceRef.current.set(data.pid, { ...data, peerId, at: Date.now() });
+      };
+
+      joinAction.onMessage = (data: JoinMessage, { peerId }: { peerId: string }) => {
         if (!bundle || !isHostRef.current) return;
         const state = bundle.state;
         let player = data.pid && data.tok
-          ? state.players.find((p) => p.id === data.pid && p.token === data.tok && !p.left)
+          ? state.players.find((p) => p.id === data.pid && p.token === data.tok)
           : undefined;
 
+        if (player && player.left) {
+          // came back after leaving or being dropped: give the seat back, or a
+          // place at the rail if the round is already running
+          player.left = false;
+          player.spectator = state.phase !== "lobby";
+          player.hand = [];
+          bundle.version += 1;
+        }
+
         if (!player) {
+          const live = state.players.filter((p) => !p.left && !p.spectator).length;
           if (state.phase !== "lobby") {
-            errorAction.send({ message: "That game already started." }, { target: peerId }).catch(() => {});
-            return;
-          }
-          if (state.players.filter((p) => !p.left).length >= MAX_PLAYERS) {
+            // mid game: watch, do not disturb the deal
+            const cleanName = String(data.name ?? "").replace(/\s+/g, " ").trim().slice(0, 14);
+            if (!cleanName) return;
+            player = addPlayer(state, cleanName, false, true);
+            bundle.version += 1;
+          } else if (live >= MAX_PLAYERS) {
             errorAction.send({ message: "Room is full." }, { target: peerId }).catch(() => {});
             return;
+          } else {
+            const cleanName = String(data.name ?? "").replace(/\s+/g, " ").trim().slice(0, 14);
+            if (!cleanName) return;
+            player = addPlayer(state, cleanName, false);
+            bundle.version += 1;
           }
-          const cleanName = String(data.name ?? "").replace(/\s+/g, " ").trim().slice(0, 14);
-          if (!cleanName) return;
-          player = addPlayer(state, cleanName, false);
-          bundle.version += 1;
         }
 
         player.connected = true;
@@ -330,7 +507,7 @@ export default function RoomClient({ code }: { code: string }) {
         publishAll();
       };
 
-      welcomeAction.onMessage = (data: WelcomeMessage, { peerId }) => {
+      welcomeAction.onMessage = (data: WelcomeMessage, { peerId }: { peerId: string }) => {
         if (isHostRef.current) return;
         hostPeerRef.current = peerId;
         saveSession(code, data.session);
@@ -338,18 +515,37 @@ export default function RoomClient({ code }: { code: string }) {
         saveName(data.session.name);
         sessionRef.current = data.session;
         setSession(data.session);
+        if (data.joinedAt) joinedAtRef.current = data.joinedAt;
         setJoinBusy(false);
         setJoinErr("");
         firstView.current = true;
         acceptView(data.view);
       };
 
-      snapshotAction.onMessage = (data: { view: ViewData }, { peerId }) => {
+      snapshotAction.onMessage = (data: { view: ViewData }, { peerId }: { peerId: string }) => {
         if (isHostRef.current || peerId !== hostPeerRef.current) return;
         acceptView(data.view);
       };
 
-      commandAction.onMessage = (command: GameCommand, { peerId }) => {
+      // a copy of the whole room, so this browser can take over if the host
+      // goes away mid game
+      mirrorAction.onMessage = (data: MirrorMessage, { peerId }: { peerId: string }) => {
+        if (!data?.state) return;
+        if (!isHostRef.current && hostPeerRef.current && peerId !== hostPeerRef.current) return;
+        keepMirror(normalizeState(data.state), data.version ?? 1);
+      };
+
+      handoffAction.onMessage = (data: MirrorMessage, { peerId }: { peerId: string }) => {
+        if (!data?.state) return;
+        const state = normalizeState(data.state);
+        mirrorRef.current = { state, version: data.version ?? 1 };
+        saveMirror(code, mirrorRef.current);
+        hostBeatRef.current = null;
+        hostPeerRef.current = peerId;
+        claimHost();
+      };
+
+      commandAction.onMessage = (command: GameCommand, { peerId }: { peerId: string }) => {
         if (!bundle || !isHostRef.current) return;
         const pid = peerPlayers.current.get(peerId);
         if (!pid) {
@@ -359,7 +555,7 @@ export default function RoomClient({ code }: { code: string }) {
         runCommand(pid, command, peerId);
       };
 
-      errorAction.onMessage = (data: { message: string }, { peerId }) => {
+      errorAction.onMessage = (data: { message: string }, { peerId }: { peerId: string }) => {
         if (isHostRef.current || (hostPeerRef.current && peerId !== hostPeerRef.current)) return;
         setJoinBusy(false);
         setJoinErr(data.message);
@@ -367,8 +563,8 @@ export default function RoomClient({ code }: { code: string }) {
         playSound("error");
       };
 
-      closedAction.onMessage = (_data, { peerId }) => {
-        if (!isHostRef.current && peerId === hostPeerRef.current) setGone("The owner closed this room.");
+      closedAction.onMessage = (_data: any, { peerId }: { peerId: string }) => {
+        if (!isHostRef.current && peerId === hostPeerRef.current) setGone("The room was closed by the owner.");
       };
 
       const requestJoin = () => {
@@ -383,14 +579,14 @@ export default function RoomClient({ code }: { code: string }) {
           tok: current?.tok,
         };
         setJoinBusy(true);
-        joinAction.send(data, { target: hostPeer }).catch(() => setNetworkNote("Could not reach owner. Retrying…"));
+        joinAction.send(data, { target: hostPeer }).catch(() => setNetworkNote("Could not reach the host. Retrying…"));
       };
       sendJoinRef.current = requestJoin;
 
       sendCommandRef.current = async (command) => {
         const hostPeer = hostPeerRef.current;
         if (!hostPeer) {
-          showToast("Owner is offline. Waiting to reconnect.");
+          showToast("No host right now. One moment…");
           playSound("error");
           return;
         }
@@ -405,10 +601,11 @@ export default function RoomClient({ code }: { code: string }) {
       };
 
       room.onPeerJoin = (peerId) => {
-        if (isHostRef.current) hostHello.send({ live: true }, { target: peerId }).catch(() => {});
+        if (isHostRef.current) hostHello.send({ live: true, hostPid: bundle?.localPid, joinedAt: joinedAtRef.current }, { target: peerId }).catch(() => {});
       };
 
       room.onPeerLeave = (peerId) => {
+        presenceRef.current.forEach((c, pid) => { if (c.peerId === peerId) presenceRef.current.delete(pid); });
         if (isHostRef.current && bundle) {
           const pid = peerPlayers.current.get(peerId);
           peerPlayers.current.delete(peerId);
@@ -422,24 +619,95 @@ export default function RoomClient({ code }: { code: string }) {
           }
         } else if (peerId === hostPeerRef.current) {
           hostPeerRef.current = null;
-          setNetworkNote("Owner disconnected. Waiting for them to return…");
+          setNetworkNote("Host dropped. Looking for the next one…");
         }
       };
 
-      if (isHostRef.current) {
-        hostHello.send({ live: true }).catch(() => {});
-        helloTimer = setInterval(() => hostHello.send({ live: true }).catch(() => {}), 2500);
-        tickTimer = setInterval(() => {
+      // ------------------------------------------------ host election
+      const monitor = () => {
+        if (stopped) return;
+        const now = Date.now();
+        const me = selfCandidate();
+        const list = [...presenceRef.current.values()];
+        if (me) list.push(me);
+        const best = pickHost(list, now);
+
+        if (isHostRef.current) {
           if (!bundle) return;
-          const owner = findPlayer(bundle.state, bundle.ownerPid);
-          if (owner) { owner.connected = true; owner.lastSeen = Date.now(); }
-          if (tick(bundle.state)) {
-            bundle.version += 1;
-            publishAll();
+          // Someone with an earlier seat is here: hand the room over with the
+          // live state rather than making them reconstruct it.
+          if (best && best.pid !== bundle.localPid && best.peerId !== SELF &&
+              isBetterHost(best, { joinedAt: joinedAtRef.current, pid: bundle.localPid })) {
+            handoffAction.send({ state: bundle.state, version: bundle.version }, { target: best.peerId }).catch(() => {});
+            stopHosting();
           }
-        }, 300);
-        snapshotTimer = setInterval(publishAll, 1000);
+          return;
+        }
+
+        if (!best || !me || best.pid !== me.pid) { outrankSinceRef.current = 0; return; }
+        const beat = hostBeatRef.current;
+        const hostGone = !beat || now - beat.at > HOST_TTL_MS;
+        if (hostGone) { claimHost(); return; }
+        // outranked the current host: give them a moment to hand it over
+        if (isBetterHost(best, beat)) {
+          if (!outrankSinceRef.current) outrankSinceRef.current = now;
+          else if (now - outrankSinceRef.current > OUTRANK_PATIENCE_MS) { outrankSinceRef.current = 0; claimHost(); }
+        } else outrankSinceRef.current = 0;
+      };
+
+      presenceTimer = setInterval(() => {
+        const me = selfCandidate();
+        if (!me || !me.pid) return;
+        presenceAction.send({ pid: me.pid, joinedAt: me.joinedAt, canHost: me.canHost, at: Date.now() }).catch(() => {});
+      }, PRESENCE_INTERVAL_MS);
+      monitorTimer = setInterval(monitor, 1000);
+
+      // ------------------------------------------------ starting up
+      if (hostIntent) {
+        // Whoever opened the room outranks everyone, so they can simply pick it
+        // back up. They wait a beat first in case another browser is already
+        // running it, which is when they get handed the freshest copy.
+        const restored = loadHostState<HostBundle>(code);
+        const seeds: MirrorMessage[] = [];
+        if (restored?.state) seeds.push({ state: restored.state, version: Math.max(1, restored.version ?? 1) });
+        if (restoredMirror?.state) seeds.push({ state: restoredMirror.state, version: Math.max(1, restoredMirror.version ?? 1) });
+        seeds.sort((a, b) => (isNewerState(a.state, b.state) ? -1 : 1));
+        const seed = seeds[0] ?? null;
+
+        const state = seed ? normalizeState(seed.state) : createRoomState("classic");
+        let owner = state.players.find((p) => p.isOwner);
+        if (!owner) owner = addPlayer(state, hostIntent.name, false);
+        joinedAtRef.current = owner.joinedAt ?? Date.now();
+        const ownerSession: Session = { pid: owner.id, tok: owner.token, name: owner.name };
+        saveSession(code, ownerSession);
+        sessionRef.current = ownerSession;
+        setSession(ownerSession);
+        mirrorRef.current = { state, version: Math.max(1, seed?.version ?? 1) };
+
+        const takeRoom = () => {
+          if (stopped || isHostRef.current) return;
+          if (!findPlayer(state, owner!.id)) return;
+          // somebody else is already running the room: they will hand it over
+          // (and if they never do, the monitor takes it back for us)
+          const beat = hostBeatRef.current;
+          if (beat && beat.pid !== owner!.id && Date.now() - beat.at <= HOST_TTL_MS) return;
+          // a fresher copy may have landed while we were waiting
+          const m = mirrorRef.current;
+          const fresher = m && isNewerState(m.state, state);
+          startHosting(
+            normalizeState(fresher ? m.state : state),
+            Math.max(1, (fresher ? m.version : seed?.version ?? 1) + 1),
+            owner!.id,
+          );
+        };
+        if (!restoredMirror) takeRoom();
+        else claimTimer = setTimeout(takeRoom, CLAIM_DELAY_MS);
       } else {
+        sessionRef.current = storedSession;
+        setSession(storedSession);
+      }
+
+      if (!isHostRef.current) {
         joinTimer = setInterval(requestJoin, 2200);
         heartbeatTimer = setInterval(() => {
           const current = sessionRef.current;
@@ -448,23 +716,32 @@ export default function RoomClient({ code }: { code: string }) {
         }, 8000);
         noHostTimer = setTimeout(() => {
           if (!viewRef.current && !hostPeerRef.current) {
-            setNetworkNote("No owner found yet. Check the code or ask the owner to keep their room open.");
+            setNetworkNote("No host found yet. Check the code, or ask whoever opened the room to come back.");
           }
         }, 10000);
       }
+
     })().catch(() => !stopped && setNetworkNote("WebRTC could not start in this browser."));
 
     return () => {
       stopped = true;
+      window.removeEventListener("pagehide", onHide);
       clearInterval(tickTimer);
       clearInterval(snapshotTimer);
       clearInterval(helloTimer);
+      clearInterval(mirrorTimer);
+      clearInterval(presenceTimer);
+      clearInterval(monitorTimer);
       clearInterval(joinTimer);
       clearInterval(heartbeatTimer);
+      clearTimeout(claimTimer);
       clearTimeout(noHostTimer);
       sendJoinRef.current = null;
       sendCommandRef.current = null;
       hostCommandRef.current = null;
+      publishAllRef.current = null;
+      stopHostingRef.current = null;
+      handoffRef.current = null;
       closeRoomRef.current = null;
       roomRef.current?.leave().catch(() => {});
       roomRef.current = null;
@@ -501,17 +778,23 @@ export default function RoomClient({ code }: { code: string }) {
   }, [code]);
 
   const leaveForHome = useCallback(async () => {
-    if (isHostRef.current) {
-      if (!window.confirm("Leaving closes this peer room for everyone. Continue?")) return;
+    const current = sessionRef.current;
+    const state = stateRef.current ?? mirrorRef.current?.state ?? null;
+    const others = state ? state.players.filter((p) => !p.left && p.id !== current?.pid).length : 0;
+
+    // step away from the seat, then pass the room on so nobody has to wait
+    // for this browser to go quiet before the next one picks it up
+    if (current) await act("leave");
+    handoffRef.current?.();
+    publishAllRef.current?.();
+    stopHostingRef.current?.();
+
+    if (isHostRef.current || others === 0) {
+      // nobody left to hand the room to
       if (closeRoomRef.current) await closeRoomRef.current();
-      else {
-        clearHostRoom(code);
-        clearSession(code);
-      }
+      else { clearHostRoom(code); clearSession(code); }
     } else {
-      await act("leave");
       await roomRef.current?.leave().catch(() => {});
-      clearSession(code);
       clearPendingName(code);
     }
     router.push("/");
@@ -532,9 +815,9 @@ export default function RoomClient({ code }: { code: string }) {
     return <Center><p className="text-[13px] text-[var(--mut)] a-pulse">Opening peer room</p></Center>;
   }
 
-  // A participant can name themselves before the owner is discovered. Existing
+  // A participant can name themselves before the host is discovered. Existing
   // sessions reconnect automatically and retain the current game view.
-  if (!isHostRef.current && !session && !view) {
+  if (!isHost && !session && !view) {
     return (
       <Center>
         <Radio size={18} className="text-[var(--mut)]" />
@@ -563,19 +846,19 @@ export default function RoomClient({ code }: { code: string }) {
     return (
       <Center>
         <Radio size={18} className="text-[var(--mut)] a-pulse" />
-        <p className="text-[13px] text-[var(--mut)] mt-3">{networkNote || "Waiting for owner…"}</p>
+        <p className="text-[13px] text-[var(--mut)] mt-3">{networkNote || "Connecting to the room…"}</p>
         <button className="btn ghost mt-5" onClick={() => router.push("/")}>Back</button>
       </Center>
     );
   }
 
-  const kicked = view.meId === null;
+  const kicked = view.meId === null && !view.iAmHost;
   if (kicked) {
     return (
       <Center>
         <h2 className="disp text-3xl">You left the table</h2>
         <div className="flex gap-2 mt-6">
-          {view.phase === "lobby" && <button className="btn acc" onClick={() => { clearSession(code); setSession(null); doJoin(name || savedName()); }}>Rejoin</button>}
+          <button className="btn acc" onClick={() => { sendJoinRef.current?.(); }}>Rejoin</button>
           <button className="btn ghost" onClick={() => router.push("/")}>Back</button>
         </div>
       </Center>
@@ -589,7 +872,7 @@ export default function RoomClient({ code }: { code: string }) {
       ) : (
         <Game code={code} view={view} meId={session?.pid ?? view.meId!} act={act} onLeave={leaveForHome} />
       )}
-      {networkNote && !isHostRef.current && (
+      {networkNote && (
         <div className="fixed top-14 left-1/2 -translate-x-1/2 z-50 a-pop max-w-[90vw]">
           <div className="text-[11px] bg-[var(--surf)] text-[var(--mut)] border border-[var(--line2)] px-3 py-2">{networkNote}</div>
         </div>

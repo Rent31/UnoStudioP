@@ -37,6 +37,12 @@ export interface PlayerState {
   connected: boolean;
   left: boolean;
   lastSeen: number;
+  // join order doubles as the host succession order: the owner joins first, so
+  // they always win the room back when they return
+  joinedAt: number;
+  // watchers sit at the table without a hand, and are skipped by dealing,
+  // turn order and scoring
+  spectator: boolean;
   hand: GameCard[];
   score: number;
   wins: number;
@@ -91,6 +97,9 @@ export interface RoomState {
   challenge?: { targetId: string; byId: string; legal: boolean } | null;
   flipColorChoice?: { playerId: string } | null;
   roulette?: RouletteState | null;
+  // who is running the room right now. Normally the owner; when their browser
+  // goes away the next player to have joined keeps the room up.
+  hostId?: string | null;
   unoRace?: { playerId: string; until: number } | null;
   roundWinnerId?: string | null;
   roundNote?: string;
@@ -144,6 +153,7 @@ export function createRoomState(variant: Variant): RoomState {
     skipOnce: [],
     lockValue: null,
     challenge: null, flipColorChoice: null, roulette: null, unoRace: null,
+    hostId: null,
     roundWinnerId: null,
     scoresAtRound: [],
     events: [],
@@ -176,7 +186,7 @@ export function log(
 
 function touch(s: RoomState) { s.lastActionAt = now(); }
 
-export function addPlayer(s: RoomState, name: string, isBot: boolean): PlayerState {
+export function addPlayer(s: RoomState, name: string, isBot: boolean, spectator = false): PlayerState {
   const p: PlayerState = {
     id: `p${Math.random().toString(36).slice(2, 10)}`,
     token: token(),
@@ -187,6 +197,8 @@ export function addPlayer(s: RoomState, name: string, isBot: boolean): PlayerSta
     connected: true,
     left: false,
     lastSeen: now(),
+    joinedAt: now(),
+    spectator: !!spectator && !isBot,
     hand: [],
     score: 0,
     wins: 0,
@@ -212,7 +224,12 @@ export function findPlayer(s: RoomState, id: string): PlayerState | undefined {
 }
 
 function activePlayers(s: RoomState): PlayerState[] {
-  return s.players.filter((p) => !p.left && !p.eliminated);
+  return s.players.filter((p) => !p.left && !p.eliminated && !p.spectator);
+}
+
+/** Everyone sitting at the table, watchers included. */
+export function seatedPlayers(s: RoomState): PlayerState[] {
+  return s.players.filter((p) => !p.left);
 }
 
 function idxOf(s: RoomState, id: string): number {
@@ -225,7 +242,7 @@ function rawNext(s: RoomState, fromIdx: number): number {
   for (let g = 0; g < n * 2 + 4; g++) {
     i = ((i + s.direction) % n + n) % n;
     const p = s.players[i];
-    if (!p.left && !p.eliminated) return i;
+    if (!p.left && !p.eliminated && !p.spectator) return i;
   }
   return fromIdx;
 }
@@ -386,7 +403,7 @@ export function startRound(s: RoomState) {
     s.players = shuffled(s.players);
     log(s, "order", "Seating order was shuffled for this round.");
   }
-  const particip = s.players.filter((p) => !p.left);
+  const particip = s.players.filter((p) => !p.left && !p.spectator);
   for (const p of particip) {
     p.hand = [];
     p.eliminated = false;
@@ -520,7 +537,7 @@ function checkLastStanding(s: RoomState) {
 }
 
 function rotateHands(s: RoomState) {
-  const seated = s.players.filter((q) => !q.left && !q.eliminated);
+  const seated = s.players.filter((q) => !q.left && !q.eliminated && !q.spectator);
   if (seated.length < 2) return;
   const hands = seated.map((q) => q.hand);
   for (let i = 0; i < seated.length; i++) {
@@ -1225,6 +1242,39 @@ function finishRoulette(s: RoomState) {
   touch(s);
 }
 
+// ---------------------------------------------------------------- host / seats
+
+/** Hand the running room to a player. A stand-in host gets admin powers so they
+ *  can run the table, but never owner powers: the owner outranks them and takes
+ *  the room back the moment they are connected again. */
+export function setHost(s: RoomState, hostId: string | null): string | null {
+  if (s.hostId === hostId) return null;
+  s.hostId = hostId;
+  const p = hostId ? findPlayer(s, hostId) : null;
+  if (p && !p.left) {
+    if (!p.isAdmin) p.isAdmin = true;
+    log(s, "admin", p.isOwner ? `${p.name} is hosting the room again.` : `${p.name} is keeping the room up.`);
+  }
+  touch(s);
+  return null;
+}
+
+/** Seat a watcher, or move a player to the rail. Lobby only. */
+export function actSetSpectate(s: RoomState, actorId: string, targetId: string, spectate: boolean): string | null {
+  const actor = findPlayer(s, actorId);
+  const t = findPlayer(s, targetId);
+  if (!actor?.isAdmin || actor.left) return "Not allowed";
+  if (!t || t.left || t.isBot) return "No such player";
+  if (s.phase !== "lobby") return "Seats can only change in the lobby";
+  if (t.isOwner) return "The owner cannot be moved to the rail";
+  if (t.spectator === !!spectate) return null;
+  t.spectator = !!spectate;
+  if (t.spectator) { t.hand = []; t.calledUno = false; }
+  log(s, "seat", `${t.name} is ${t.spectator ? "watching this game" : "back at the table"}.`);
+  touch(s);
+  return null;
+}
+
 // ---------------------------------------------------------------- admin
 
 export function actKick(s: RoomState, actorId: string, targetId: string): string | null {
@@ -1253,7 +1303,7 @@ export function actLeave(s: RoomState, playerId: string): string | null {
 }
 
 export function removePlayer(s: RoomState, t: PlayerState, msg: string) {
-  if (s.phase === "lobby") {
+  if (s.phase === "lobby" && !t.isOwner) {
     s.players = s.players.filter((p) => p.id !== t.id);
   } else {
     t.left = true;
@@ -1502,7 +1552,7 @@ export function actStart(s: RoomState, actorId: string): string | null {
   const actor = findPlayer(s, actorId);
   if (!actor?.isAdmin || actor.left) return "Only an admin can start";
   if (s.phase !== "lobby") return "Already started";
-  const seated = s.players.filter((p) => !p.left);
+  const seated = s.players.filter((p) => !p.left && !p.spectator);
   if (seated.length < 2) return "Need at least 2 players";
   for (const p of seated) p.score = 0;
   s.dealerIdx = 0;
@@ -1737,6 +1787,7 @@ export function buildView(s: RoomState, forPlayerId: string | null, version: num
       cardCount: p.hand.length, score: p.score, wins: p.wins,
       powerGreen: p.powerGreen,
       calledUno: !!p.calledUno,
+      spectator: !!p.spectator,
       isTurn: s.phase === "playing" && s.players[s.turn.playerIdx]?.id === p.id,
     };
     if (mine) {
@@ -1778,6 +1829,9 @@ export function buildView(s: RoomState, forPlayerId: string | null, version: num
     meId: me?.id ?? null,
     iAmAdmin: !!(me?.isAdmin),
     iAmOwner: !!(me?.isOwner),
+    iAmHost: !!me && s.hostId === me.id,
+    hostId: s.hostId ?? null,
+    hostName: s.hostId ? findPlayer(s, s.hostId)?.name ?? null : null,
     players,
     drawCount: s.drawPile.length,
     discardCount: s.discardPile.length,

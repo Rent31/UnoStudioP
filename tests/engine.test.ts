@@ -2,9 +2,12 @@ import {
   addPlayer, actPlay, actDraw, actPass, actUno, actChallenge,
   tick, actChooseColor, actEndDouble, actReorder, actShuffleSeats, actChat, actSetChat, actClearChat, startRound, buildView, createRoomState, addPlayer as _addP, RoomState,
   actRouletteColor, actRoulettePull, actRouletteFinish, ROULETTE_HOLD_MS,
+  actSetSpectate, actStart,
 } from "../src/lib/game/engine";
 import { GameCard, Face, Variant, buildAllWildDeck, buildFlipDeck, buildFlexDeck } from "../src/lib/game/model";
 import { dispatchGameCommand } from "../src/lib/game/dispatch";
+import { setHost } from "../src/lib/game/engine";
+import { pickHost, hostShouldChange, isBetterHost, isNewerState, PRESENCE_TTL_MS, type HostCandidate } from "../src/lib/host";
 
 let failures = 0;
 function ok(cond: boolean, msg: string) {
@@ -523,6 +526,78 @@ ok(buildAllWildDeck().every((c) => c.light.color === "wild"), "every all wild ca
   ok(s.players[s.turn.playerIdx].id === c.id, "draw color: the victim loses the turn");
 }
 
+
+// ---------------- watchers sit out the deal and the turn order
+{
+  const s = createRoomState("classic");
+  const a = addPlayer(s, "A", false);
+  const b = addPlayer(s, "B", false);
+  const spec = addPlayer(s, "S", false);
+  a.isAdmin = true;
+
+  ok(actSetSpectate(s, b.id, spec.id, true) !== null, "seats: only an admin can move people to the rail");
+  ok(actSetSpectate(s, a.id, spec.id, true) === null, "seats: an admin moves a player to the rail");
+  ok(spec.spectator === true, "seats: the player is flagged as watching");
+  ok(actSetSpectate(s, a.id, a.id, true) !== null, "seats: the owner always has a seat");
+  ok(actStart(s, a.id) === null, "seats: two seated players are enough to start");
+
+  ok(a.hand.length === 7 && b.hand.length === 7, "seats: only seated players are dealt in");
+  ok(spec.hand.length === 0, "seats: a watcher holds no cards");
+  ok(s.players[s.turn.playerIdx].id !== spec.id, "seats: the watcher is not the turn player");
+  ok(buildView(s, spec.id, 1, 0).players.find((p) => p.id === spec.id)!.spectator === true,
+    "seats: the watcher is flagged in the view");
+  ok(actSetSpectate(s, a.id, spec.id, false) !== null, "seats: nobody is reseated once a round is running");
+
+  // a watcher in the middle of the order is stepped over, not stuck on
+  const before = s.players[s.turn.playerIdx].id;
+  actPlay(s, before === a.id ? a.id : b.id, s.players[s.turn.playerIdx].hand[0].id, {});
+  ok(s.players[s.turn.playerIdx].id !== spec.id, "seats: turn order skips the watcher");
+}
+
+// ---------------- the room can be handed to another browser and taken back
+{
+  const s = createRoomState("classic");
+  const owner = addPlayer(s, "A", false);
+  const second = addPlayer(s, "B", false);
+  ok(owner.isOwner && owner.isAdmin, "host: the opener is owner and admin");
+  ok(second.joinedAt >= owner.joinedAt, "host: join order follows the seats");
+
+  setHost(s, second.id);
+  ok(s.hostId === second.id, "host: another browser can run the room");
+  ok(second.isAdmin === true, "host: a stand-in host gets admin powers");
+  ok(second.isOwner === false, "host: a stand-in host never becomes owner");
+
+  setHost(s, owner.id);
+  ok(s.hostId === owner.id, "host: the owner takes the room straight back");
+  ok(owner.isOwner === true, "host: owner powers are untouched by the stand-in");
+  const v = buildView(s, second.id, 1, 0);
+  ok(v.iAmHost === false && v.hostId === owner.id, "host: the view names the current host");
+}
+
+// ---------------- host election, run by every browser on its own
+{
+  const now = 500000;
+  const seat = (pid: string, joinedAt: number, canHost = true, at = now): HostCandidate =>
+    ({ pid, peerId: "p" + pid, joinedAt, canHost, at });
+
+  const list = [seat("b", 2000), seat("a", 1000)];
+  ok(pickHost(list, now)?.pid === "a", "election: the earliest seat runs the room");
+  ok(pickHost(list, now + PRESENCE_TTL_MS + 1) === null, "election: a browser that stopped answering is dropped");
+  ok(pickHost([seat("a", 1000, false)], now) === null, "election: no copy of the room means no hosting");
+  ok(pickHost([seat("z", 1000), seat("a", 1000)], now)?.pid === "a", "election: identical seats fall back to id");
+
+  ok(hostShouldChange(null, list[1], now) === true, "election: with nobody hosting, the best seat takes it");
+  ok(hostShouldChange({ pid: "a", joinedAt: 1000, at: now }, list[1], now) === false,
+    "election: a sitting host that outranks everyone keeps the room");
+  ok(hostShouldChange({ pid: "b", joinedAt: 2000, at: now }, list[1], now) === true,
+    "election: an outranked host gives the room up");
+  ok(isBetterHost({ joinedAt: 1000, pid: "a" }, { joinedAt: 1000, pid: "b" }) === true, "election: tie broken by id");
+
+  ok(isNewerState({ seq: 5, lastActionAt: 1 }, { seq: 4, lastActionAt: 99 }) === true,
+    "election: the copy with more events wins");
+  ok(isNewerState({ seq: 4, lastActionAt: 99 }, { seq: 5, lastActionAt: 1 }) === false,
+    "election: an older copy never replaces a newer one");
+}
 
 console.log(failures === 0 ? "ALL TESTS PASSED" : failures + " FAILURES");
 process.exit(failures ? 1 : 0);

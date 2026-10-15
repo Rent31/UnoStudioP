@@ -28,6 +28,7 @@ export interface PlayerView {
   wins: number;
   powerGreen: boolean;
   calledUno: boolean;
+  spectator: boolean;
   isTurn: boolean;
   hand?: HandCardView[];
   otherSide?: Face[];
@@ -73,6 +74,9 @@ export interface ViewData {
   meId: string | null;
   iAmAdmin: boolean;
   iAmOwner: boolean;
+  iAmHost: boolean;
+  hostId: string | null;
+  hostName: string | null;
   players: PlayerView[];
   drawCount: number;
   discardCount: number;
@@ -106,6 +110,7 @@ export interface HostIntent {
 
 const HOST_KEY = (code: string) => `uno-host-${code}`;
 const HOST_STATE_KEY = (code: string) => `uno-host-state-${code}`;
+const MIRROR_KEY = (code: string) => `uno-mirror-${code}`;
 const PENDING_KEY = (code: string) => `uno-pending-name-${code}`;
 
 export function generateRoomCode(): string {
@@ -139,7 +144,21 @@ export function clearHostRoom(code: string) {
   try {
     localStorage.removeItem(HOST_KEY(code));
     localStorage.removeItem(HOST_STATE_KEY(code));
+    localStorage.removeItem(MIRROR_KEY(code));
   } catch {}
+}
+
+// Every browser keeps a copy of the room so the next player can take over if
+// the one running it disappears.
+export function saveMirror(code: string, value: unknown) {
+  try { localStorage.setItem(MIRROR_KEY(code), JSON.stringify(value)); } catch {}
+}
+
+export function loadMirror<T>(code: string): T | null {
+  try {
+    const raw = localStorage.getItem(MIRROR_KEY(code));
+    return raw ? JSON.parse(raw) as T : null;
+  } catch { return null; }
 }
 
 export function saveHostState(code: string, value: unknown) {

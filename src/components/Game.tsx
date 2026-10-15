@@ -221,6 +221,7 @@ export default function Game({ code, view, meId, act, onLeave }: {
       if (roulette.done) return `${roulette.pullerName} hit ${rouletteColor}`;
       return roulette.pullerId === meId ? `Pull until ${rouletteColor}` : `${roulette.pullerName} pulls until ${rouletteColor}`;
     }
+    if (me?.spectator) return "You are watching this game";
     if (myTurn) {
       if (view.pendingDraw > 0) return `Stack it or take ${view.pendingDraw}`;
       if (view.turnStage === "drewCard") return "Play it or pass";
@@ -241,6 +242,7 @@ export default function Game({ code, view, meId, act, onLeave }: {
         <span className="chip">{VARIANT_META[view.variant].name}</span>
         {isFlip && <span className="chip">{view.side === "dark" ? "Dark" : "Light"}</span>}
         {view.pendingDraw > 0 && <span className="chip !border-[var(--acc)] !text-[var(--acc)]">+{view.pendingDraw}</span>}
+        {me?.spectator && <span className="chip">Watching</span>}
         <span className="ml-auto flex items-center gap-2">
           {!isAllWild && <i className="w-4 h-4 border border-black/25" style={{ background: colorHex(view.currentColor) }} />}
           {view.iAmAdmin && <button className="iconbtn" onClick={() => setShowAdmin(true)} title="Admin"><Shield size={14} /></button>}
@@ -473,7 +475,9 @@ export default function Game({ code, view, meId, act, onLeave }: {
           <span className={`text-[13px] font-semibold ${myTurn ? "text-[var(--gold)]" : ""}`}>{me.name}</span>
           {view.targetScore > 0 && <span className="text-[11px] text-[var(--mut)]">{me.score} pts</span>}
           {me.wins > 0 && <span className="text-[11px] text-[var(--gold)]">{me.wins} {me.wins === 1 ? "win" : "wins"}</span>}
-          <span className="text-[11px] text-[var(--mut)]">{me.cardCount} cards</span>
+          {me.spectator
+            ? <span className="text-[11px] text-[var(--mut)]">watching, no hand</span>
+            : <span className="text-[11px] text-[var(--mut)]">{me.cardCount} cards</span>}
           {isFlex && (
             <span className="flex items-center gap-1">
               <span className="tokwrap pointer-events-none" style={{ "--k": 0.12 } as never}><TokView green={me.powerGreen} /></span>

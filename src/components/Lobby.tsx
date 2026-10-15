@@ -29,7 +29,8 @@ export default function Lobby({ code, view, meId, act, onLeave }: {
   const [showLog, setShowLog] = useState(false);
 
   const docked = useMedia("(min-width: 720px)");
-  const seated = view.players.filter((p) => !p.left);
+  const seated = view.players.filter((p) => !p.left && !p.spectator);
+  const watchers = view.players.filter((p) => !p.left && p.spectator);
   const admin = view.iAmAdmin;
   const timer = view.rules.turnTimer;
   const isPreset = (TIMER_OPTIONS as readonly number[]).includes(timer);
@@ -120,7 +121,7 @@ export default function Lobby({ code, view, meId, act, onLeave }: {
             onClick={() => { setTab(t); playSound("click"); }}
             className={`tabfont flex-1 md:flex-none md:px-9 py-3 text-[14px] relative transition-colors ${tab === t ? "text-[var(--ink)]" : "text-[var(--mut)] hover:text-[var(--ink2)]"}`}
           >
-            {t === "game" ? "Game" : `Players ${seated.length}`}
+            {t === "game" ? "Game" : `Players ${seated.length}${watchers.length ? ` +${watchers.length}` : ""}`}
             {tab === t && <span className="absolute left-0 right-0 bottom-[-1px] h-[2px] bg-[var(--acc)] a-in" />}
           </button>
         ))}
@@ -227,6 +228,7 @@ export default function Lobby({ code, view, meId, act, onLeave }: {
               onSetAdmin={(p, v) => act("setAdmin", { targetId: p.id, value: v })}
               onRemove={(p) => act(p.isBot ? "removeBot" : "kick", { targetId: p.id })}
               onAddBot={() => act("addBot")}
+              onSetSpectate={(p, v) => { playSound("click"); act("setSpectate", { targetId: p.id, value: v }); }}
             />
           </div>
         )}
@@ -241,13 +243,19 @@ export default function Lobby({ code, view, meId, act, onLeave }: {
                 ? "Waiting for one more player"
                 : `${VARIANT_META[view.variant].name}, ${seated.length} players, ${goal === 0 ? "wins only" : goal + " points"}`}
             </span>
-            {view.iAmOwner && <span className="block text-[10px] mt-0.5">This browser hosts the room. Keep it open.</span>}
+            <span className="block text-[10px] mt-0.5">
+              {view.iAmHost
+                ? "This browser is running the room."
+                : view.hostName
+                  ? `${view.hostName} is running the room. It keeps going if they drop.`
+                  : "Looking for someone to run the room…"}
+            </span>
           </span>
           {admin ? (
             <button className="btn acc" onClick={() => act("start")} disabled={seated.length < 2}>
               <Play size={14} /> Start
             </button>
-          ) : <span className="text-[12px] text-[var(--mut)] a-pulse">Waiting for the host</span>}
+          ) : <span className="text-[12px] text-[var(--mut)] a-pulse">Waiting for the host to start</span>}
         </div>
       </div>
 

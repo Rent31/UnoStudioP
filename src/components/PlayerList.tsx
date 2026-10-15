@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Bot, Crown, GripVertical, Pencil, Plus, Shield, ShieldOff, Shuffle, X } from "lucide-react";
+import { Bot, Crown, EyeOff, GripVertical, Pencil, Plus, Shield, ShieldOff, Shuffle, UserPlus, X } from "lucide-react";
 import type { PlayerView } from "@/lib/client";
 import { playSound } from "@/lib/sound";
 
@@ -9,7 +9,7 @@ const ROW_H = 58;
 const GAP = 8;
 const SLOT = ROW_H + GAP;
 
-export default function PlayerList({ players, meId, admin, locked, onReorder, onShuffle, onRename, onSetAdmin, onRemove, onAddBot }: {
+export default function PlayerList({ players, meId, admin, locked, onReorder, onShuffle, onRename, onSetAdmin, onRemove, onAddBot, onSetSpectate }: {
   players: PlayerView[];
   meId: string;
   admin: boolean;
@@ -20,6 +20,8 @@ export default function PlayerList({ players, meId, admin, locked, onReorder, on
   onSetAdmin: (p: PlayerView, v: boolean) => void;
   onRemove: (p: PlayerView) => void;
   onAddBot: () => void;
+  // only supplied while seats can still change, i.e. in the lobby
+  onSetSpectate?: (p: PlayerView, v: boolean) => void;
 }) {
   const incoming = players.filter((p) => !p.left);
   const canDrag = admin && !locked;
@@ -129,7 +131,7 @@ export default function PlayerList({ players, meId, admin, locked, onReorder, on
           const p = byId.get(id)!;
           return (
             <Row key={id} p={p} meId={meId} admin={admin} index={-1} canDrag={false}
-              onRename={onRename} onSetAdmin={onSetAdmin} onRemove={onRemove} />
+              onRename={onRename} onSetAdmin={onSetAdmin} onRemove={onRemove} onSetSpectate={onSetSpectate} />
           );
         })}
       </div>
@@ -177,6 +179,7 @@ export default function PlayerList({ players, meId, admin, locked, onReorder, on
                 onRename={onRename}
                 onSetAdmin={onSetAdmin}
                 onRemove={onRemove}
+                onSetSpectate={onSetSpectate}
               />
             </div>
           );
@@ -210,12 +213,13 @@ export default function PlayerList({ players, meId, admin, locked, onReorder, on
   );
 }
 
-function Row({ p, meId, admin, index, canDrag, lifted, onGrab, onRename, onSetAdmin, onRemove }: {
+function Row({ p, meId, admin, index, canDrag, lifted, onGrab, onRename, onSetAdmin, onRemove, onSetSpectate }: {
   p: PlayerView; meId: string; admin: boolean; index: number; canDrag: boolean; lifted?: boolean;
   onGrab?: (clientY: number) => void;
   onRename: (p: PlayerView) => void;
   onSetAdmin: (p: PlayerView, v: boolean) => void;
   onRemove: (p: PlayerView) => void;
+  onSetSpectate?: (p: PlayerView, v: boolean) => void;
 }) {
   return (
     <div
@@ -250,12 +254,23 @@ function Row({ p, meId, admin, index, canDrag, lifted, onGrab, onRename, onSetAd
           {p.isBot && <Bot size={12} className="text-[var(--mut)] shrink-0" />}
         </span>
         <span className="text-[11px] text-[var(--mut)]">
-          {p.id === meId ? "You" : p.isBot ? "Bot" : p.connected ? "Ready" : "Away"}
+          {p.spectator
+            ? <span className="text-[var(--ink2)]">Watching</span>
+            : p.id === meId ? "You" : p.isBot ? "Bot" : p.connected ? "Ready" : "Away"}
           {p.wins > 0 && <span className="text-[var(--gold)]"> · {p.wins} {p.wins === 1 ? "win" : "wins"}</span>}
         </span>
       </span>
 
       <span className="flex items-center gap-1 shrink-0">
+        {!!onSetSpectate && admin && !p.isOwner && !p.isBot && (
+          <button
+            className={`iconbtn !w-7 !h-7 ${p.spectator ? "on" : ""}`}
+            title={p.spectator ? "Put them back at the table" : "Move them to the rail"}
+            onClick={() => onSetSpectate(p, !p.spectator)}
+          >
+            {p.spectator ? <UserPlus size={11} /> : <EyeOff size={11} />}
+          </button>
+        )}
         {(p.id === meId || admin) && (
           <button className="iconbtn !w-7 !h-7" title="Rename" onClick={() => onRename(p)}><Pencil size={11} /></button>
         )}

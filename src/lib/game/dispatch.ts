@@ -23,6 +23,7 @@ import {
   actSetAdmin,
   actSetChat,
   actSetRule,
+  actSetSpectate,
   actSetVariant,
   actShuffleSeats,
   actSkipTurn,
@@ -54,6 +55,7 @@ export function dispatchGameCommand(
   switch (command.type) {
     case "ping": return null;
     case "setVariant": return actSetVariant(state, p.id, body.variant as Variant);
+    case "setSpectate": return actSetSpectate(state, p.id, String(body.targetId ?? ""), !!body.value);
     case "setRule": return actSetRule(state, p.id, String(body.name), body.value as boolean | number);
     case "reorder": return actReorder(state, p.id, (body.order as string[]) ?? []);
     case "shuffleSeats": return actShuffleSeats(state, p.id);
