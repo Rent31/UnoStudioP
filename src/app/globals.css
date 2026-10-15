@@ -263,10 +263,17 @@
   touch-action: pan-x;
   overscroll-behavior-x: contain;
   scrollbar-width: thin;
+  cursor: grab;
 }
+/* while mouse-dragging the hand (see useDragScroll) */
+/* touch pointers scroll natively and never get this class */
+.handscroll.dragging, .handscroll.dragging .cardwrap { cursor: grabbing; }
 .handrow {
   display: flex; flex-wrap: nowrap; align-items: flex-end;
   width: max-content; min-width: 100%;
+  /* centred while the hand fits; once it is wider than the strip, "safe"
+     aligns it to the start instead, so the first card is never pushed off
+     the left edge unreachable and the rest run off the right to scroll to */
   justify-content: center;
   justify-content: safe center;
   /* headroom so a raised card is never clipped, tightened on short screens */

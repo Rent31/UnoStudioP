@@ -17,9 +17,9 @@ const CARD_H = 180;
 export function useFluidScale(
   feltRef: RefObject<HTMLElement | null>,
   handRef: RefObject<HTMLElement | null>,
-  opts: { maxOpponentCards: number; myCards: number },
+  opts: { maxOpponentCards: number },
 ) {
-  const { maxOpponentCards, myCards } = opts;
+  const { maxOpponentCards } = opts;
 
   useEffect(() => {
     const root = document.documentElement.style;
@@ -64,22 +64,16 @@ export function useFluidScale(
       root.setProperty("--k-seat-side", String(round(kSide)));
       root.setProperty("--seat-overlap", String(round(overlap)));
 
-      // The hand fits its own strip, shrinking before it resorts to scrolling.
-      const hand = handRef.current;
-      if (hand) {
-        const hw = hand.clientWidth;
-        const hh = hand.clientHeight;
-        if (hw > 40 && hh > 40) {
-          const cards = Math.max(1, myCards);
-          const handOverlap = clamp(0.42, 0.42 + Math.max(0, cards - 7) * 0.03, 0.72);
-          const byH = (hh - 30) / CARD_H;
-          // total width = cardW * k * (1 + (cards - 1) * (1 - overlap))
-          const span = 1 + (cards - 1) * (1 - handOverlap);
-          const byW = (hw - 28) / (CARD_W * span);
-          root.setProperty("--k-hand", String(round(clamp(0.3, Math.min(byH, byW), 0.72))));
-          root.setProperty("--hand-overlap", String(round(handOverlap)));
-        }
-      }
+      // Hand cards are sized from the window height only -- never from how
+      // many cards are held or how narrow the strip is. Shrinking (or
+      // overlapping harder) to squeeze a big hand into the width made cards
+      // unreadably small on phones. Instead the hand keeps a readable size,
+      // the extra cards run off the right edge, and .handscroll scrolls to
+      // reach them. A short window (a phone held sideways) still scales the
+      // cards down, since there the height genuinely is not there.
+      const byViewH = (window.innerHeight * 0.27 - 34) / CARD_H;
+      root.setProperty("--k-hand", String(round(clamp(0.42, byViewH, 0.72))));
+      root.setProperty("--hand-overlap", "0.42");
     };
 
     apply();
@@ -93,5 +87,5 @@ export function useFluidScale(
       window.removeEventListener("resize", apply);
       window.removeEventListener("orientationchange", apply);
     };
-  }, [feltRef, handRef, maxOpponentCards, myCards]);
+  }, [feltRef, handRef, maxOpponentCards]);
 }
