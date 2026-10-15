@@ -61,7 +61,7 @@
   :focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
 }
 
-.disp { font-family: var(--font-anton), "Arial Narrow", sans-serif; letter-spacing: .005em; }
+.disp { font-family: "Anton", var(--font-anton), "Arial Narrow", sans-serif; letter-spacing: .005em; }
 .mono { font-family: var(--font-jbmono), ui-monospace, monospace; }
 .lbl { font-size: 11px; letter-spacing: .06em; color: var(--mut); }
 
@@ -103,13 +103,13 @@
   animation-delay: .1s;
 }
 
-/* the tail of the name sits on the same line, set in the light body face so it
-   reads as one word against the heavy display letters of UNO */
+/* the tail of the name sits on the same line, cut from an angular face so it
+   stays sharp against the heavy display letters of UNO */
 .brand-shima {
-  font-family: var(--font-inter), "Inter", system-ui, sans-serif;
-  font-size: .8em;
-  font-weight: 300;
-  letter-spacing: .015em;
+  font-family: "Rajdhani", var(--font-inter), "Inter", system-ui, sans-serif;
+  font-size: .86em;
+  font-weight: 500;
+  letter-spacing: .025em;
   text-indent: 0;
   animation: fadeUp .45s cubic-bezier(.2,.8,.3,1) both;
   animation-delay: .18s;

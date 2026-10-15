@@ -1,6 +1,8 @@
 import type { Metadata, Viewport } from "next";
 import type { ReactNode } from "react";
 import { Inter, Anton, JetBrains_Mono } from "next/font/google";
+import "@fontsource/anton/400.css";
+import "@fontsource/rajdhani/500.css";
 import "./globals.css";
 
 const inter = Inter({ subsets: ["latin"], variable: "--font-inter" });
