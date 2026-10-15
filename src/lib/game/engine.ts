@@ -46,7 +46,21 @@ export interface PlayerState {
 }
 
 export type Phase = "lobby" | "playing" | "roundOver" | "gameOver";
-export type TurnStage = "play" | "drewCard" | "double";
+export type TurnStage = "play" | "drewCard" | "double" | "roulette";
+
+// A color roulette / draw-until-color pull in progress. The cards come off the
+// pile one at a time and every card drawn is public, so the whole table watches
+// the victim dig for the named color.
+export interface RouletteState {
+  kind: "wildColorRoulette" | "wildDrawColor";
+  byId: string;          // who played the card
+  chooserId: string;     // who names the color
+  pullerId: string;      // who draws
+  color: ColorName | null;
+  drawn: GameCard[];     // pulled so far, in order, face up for everyone
+  advance: number;       // turn advance once the pull is done
+  doneAt: number | null; // when the color turned up
+}
 
 export interface RoomState {
   variant: Variant;
@@ -76,6 +90,7 @@ export interface RoomState {
   lockValue?: FaceValue | null;
   challenge?: { targetId: string; byId: string; legal: boolean } | null;
   flipColorChoice?: { playerId: string } | null;
+  roulette?: RouletteState | null;
   unoRace?: { playerId: string; until: number } | null;
   roundWinnerId?: string | null;
   roundNote?: string;
@@ -94,6 +109,9 @@ const BOT_NAMES = ["Ada", "Turing", "Hopper", "Linus", "Margo", "Rex", "Nova", "
 export const MAX_PLAYERS = 10;
 const UNO_WINDOW_MS = 4000;
 export const BOT_DELAY_MS = 950;
+// how long the table gets to look at the card that ended the pull before the
+// turn moves on by itself
+export const ROULETTE_HOLD_MS = 1700;
 
 function now() { return Date.now(); }
 
@@ -125,7 +143,7 @@ export function createRoomState(variant: Variant): RoomState {
     pendingDraw: 0, stackValue: 0,
     skipOnce: [],
     lockValue: null,
-    challenge: null, flipColorChoice: null, unoRace: null,
+    challenge: null, flipColorChoice: null, roulette: null, unoRace: null,
     roundWinnerId: null,
     scoresAtRound: [],
     events: [],
@@ -396,6 +414,7 @@ export function startRound(s: RoomState) {
   s.lockValue = null;
   s.challenge = null;
   s.flipColorChoice = null;
+  s.roulette = null;
   s.unoRace = null;
   s.round += 1;
   s.roundWinnerId = null;
@@ -430,6 +449,7 @@ function endRound(s: RoomState, winnerId: string, note: string) {
   s.roundOverAt = now();
   s.challenge = null;
   s.flipColorChoice = null;
+  s.roulette = null;
   s.unoRace = null;
   s.pendingDraw = 0;
   const target = s.rules.pointGoal;
@@ -527,6 +547,7 @@ export function actPlay(s: RoomState, playerId: string, cardId: string, opts: Pl
   if (s.phase !== "playing") return "Round is over";
   if (s.challenge) return "Waiting on a challenge";
   if (s.flipColorChoice) return "Waiting on a color pick";
+  if (s.roulette) return "Waiting on the color pull";
   const myIdx = idxOf(s, p.id);
   const card = p.hand.find((c) => c.id === cardId);
   if (!card) return "Card not in hand";
@@ -557,8 +578,10 @@ export function actPlay(s: RoomState, playerId: string, cardId: string, opts: Pl
 
   const useFlex = !!opts.useFlex;
   const colorChoices = s.side === "dark" ? DARK_COLOR_NAMES : LIGHT_COLOR_NAMES;
+  // a color roulette is named by the player who has to pull, not by the player
+  // putting the card down; draw until color is named right here
   const needsColor = isWildFace(f) && s.variant !== "allwild"
-    && f.value !== "wildSwap" && f.value !== "wildTargetDraw2";
+    && f.value !== "wildSwap" && f.value !== "wildTargetDraw2" && f.value !== "wildColorRoulette";
   const chosen: ColorName | undefined = opts.color;
   if (needsColor && (!chosen || !(colorChoices as readonly string[]).includes(chosen))) return "Choose a color";
 
@@ -786,22 +809,31 @@ export function actPlay(s: RoomState, playerId: string, cardId: string, opts: Pl
       break;
     }
     case "wildColorRoulette": case "wildDrawColor": {
-      if (chosen) s.currentColor = chosen;
       const v = s.players[nextIdx(s, myIdx, 1)];
-      let drawn = 0;
-      for (let g = 0; g < 200; g++) {
-        const got = takeCards(s, 1, discardDraw);
-        if (got.length === 0) break;
-        v.hand.push(got[0]);
-        drawn++;
-        const cf = face(s, got[0]);
-        if (!isWildFace(cf) && cf.color === chosen) break;
+      const adv = effValue === "wildDrawColor" && s.rules.colorCurse ? 3 : 2;
+      if (!v || v.left || v.eliminated) {
+        if (chosen) s.currentColor = chosen;
+        advance = adv;
+        break;
       }
-      v.calledUno = false;
-      checkMercy(s, v);
-      checkMercy10(s, v);
-      log(s, "roulette", `${p.name} played ${labelOf(s, f)}. ${v.name} drew ${drawn} chasing ${chosen}.`, { card: f, actor: p.name });
-      advance = effValue === "wildDrawColor" && s.rules.colorCurse ? 3 : 2;
+      // Draw Until Color is named by whoever played it. The Color Roulette is
+      // named by the player who has to pull, so the color stays open for now.
+      const named = effValue === "wildDrawColor" ? (chosen ?? null) : null;
+      if (named) s.currentColor = named;
+      s.roulette = {
+        kind: effValue === "wildDrawColor" ? "wildDrawColor" : "wildColorRoulette",
+        byId: p.id,
+        chooserId: named ? p.id : v.id,
+        pullerId: v.id,
+        color: named,
+        drawn: [],
+        advance: adv,
+        doneAt: null,
+      };
+      log(s, "roulette", named
+        ? `${p.name} played ${labelOf(s, f)} and called ${named}. ${v.name} pulls one card at a time until ${named} turns up.`
+        : `${p.name} played ${labelOf(s, f)}. ${v.name} names a color, then pulls one card at a time until it turns up.`,
+        { card: f, actor: p.name });
       break;
     }
     case "flip": {
@@ -881,6 +913,16 @@ export function actPlay(s: RoomState, playerId: string, cardId: string, opts: Pl
   checkLastStanding(s);
   if (s.phase !== "playing") { touch(s); return null; }
 
+  // A roulette hands the table over: first to whoever names the color, then to
+  // whoever has to pull. Nothing else happens until the pull is finished.
+  if (s.roulette) {
+    const actingId = s.roulette.color ? s.roulette.pullerId : s.roulette.chooserId;
+    s.turn = { playerIdx: idxOf(s, actingId), stage: "roulette" };
+    s.turnStartedAt = now();
+    touch(s);
+    return null;
+  }
+
   // double play window
   const canDouble = s.rules.doublePlay && !jumped && s.turn.stage !== "double" && p.hand.length > 0 &&
     p.hand.some((c) => {
@@ -930,6 +972,7 @@ export function actDraw(s: RoomState, playerId: string): string | null {
   if (s.phase !== "playing") return "Round is over";
   if (s.challenge) return "Waiting on a challenge";
   if (s.flipColorChoice) return "Waiting on a color pick";
+  if (s.roulette) return "Waiting on the color pull";
   if (s.turn.playerIdx !== idxOf(s, playerId)) return "Not your turn";
   if (s.turn.stage === "drewCard") return "Already drew";
   if (s.turn.stage === "double") return actEndDouble(s, playerId);
@@ -984,6 +1027,7 @@ export function actPass(s: RoomState, playerId: string): string | null {
   if (!p) return "Not in game";
   if (s.phase !== "playing") return "Round is over";
   if (s.turn.playerIdx !== idxOf(s, playerId)) return "Not your turn";
+  if (s.roulette) return "Waiting on the color pull";
   if (s.turn.stage === "double") return actEndDouble(s, playerId);
   if (s.turn.stage !== "drewCard") return "Nothing to pass";
   if (s.rules.forcedPlay) {
@@ -1078,6 +1122,107 @@ export function actChooseColor(s: RoomState, playerId: string, color: ColorName)
   return null;
 }
 
+// ---------------------------------------------------------------- color roulette
+
+/** Name the color a roulette is chasing. */
+export function actRouletteColor(s: RoomState, playerId: string, color: ColorName): string | null {
+  const r = s.roulette;
+  if (!r) return "No roulette pending";
+  if (r.color) return "The color is already named";
+  if (r.chooserId !== playerId) return "Not your color to name";
+  const choices = s.side === "dark" ? DARK_COLOR_NAMES : LIGHT_COLOR_NAMES;
+  if (!(choices as readonly string[]).includes(color)) return "Bad color";
+  const chooser = findPlayer(s, playerId);
+  if (!chooser || chooser.left || chooser.eliminated) return "Not in game";
+
+  r.color = color;
+  s.currentColor = color;
+  log(s, "wild", `${chooser.name} calls ${color}.`);
+
+  const puller = findPlayer(s, r.pullerId);
+  if (!puller || puller.left || puller.eliminated) { finishRoulette(s); return null; }
+  s.turn = { playerIdx: idxOf(s, r.pullerId), stage: "roulette" };
+  s.turnStartedAt = now();
+  touch(s);
+  return null;
+}
+
+/** Pull exactly one card off the pile and show it to the whole table. */
+export function actRoulettePull(s: RoomState, playerId: string): string | null {
+  const r = s.roulette;
+  if (!r) return "Nothing to pull";
+  if (r.doneAt) return "The pull is over";
+  if (r.pullerId !== playerId) return "Not your pull";
+  if (!r.color) return "Name a color first";
+  const p = findPlayer(s, playerId);
+  if (!p || p.left || p.eliminated) return "Not in game";
+
+  clearUnoRaceFor(s, p);
+  const got = takeCards(s, 1, s.rules.discardRoulette);
+  if (got.length === 0) {
+    log(s, "roulette", `The pile is empty. ${p.name} keeps ${r.drawn.length} card${r.drawn.length === 1 ? "" : "s"} and play moves on.`);
+    finishRoulette(s);
+    return null;
+  }
+
+  const card = got[0];
+  p.hand.push(card);
+  r.drawn.push(card);
+  if (p.hand.length > 1) p.calledUno = false;
+  const cf = face(s, card);
+  const hit = !isWildFace(cf) && cf.color === r.color;
+  log(s, "draw", `${p.name} pulls ${labelOf(s, cf)}.`, { card: cf, actor: p.name });
+  checkMercy(s, p);
+  checkMercy10(s, p);
+
+  s.turn = { playerIdx: idxOf(s, p.id), stage: "roulette" };
+  s.turnStartedAt = now();
+  if (hit) {
+    r.doneAt = now();
+    log(s, "roulette", `${p.name} hit ${r.color} after ${r.drawn.length} card${r.drawn.length === 1 ? "" : "s"}.`, { card: cf, actor: p.name });
+  } else if (p.eliminated || p.left) {
+    r.doneAt = now();
+    log(s, "roulette", `${p.name} is out of the round after ${r.drawn.length} card${r.drawn.length === 1 ? "" : "s"}.`);
+  }
+  checkLastStanding(s);
+  touch(s);
+  return null;
+}
+
+/** End a finished pull early. The table gets a moment to see the last card. */
+export function actRouletteFinish(s: RoomState, playerId: string): string | null {
+  const r = s.roulette;
+  if (!r) return "Nothing to finish";
+  const p = findPlayer(s, playerId);
+  if (!p) return "Not in game";
+  if (r.pullerId !== playerId && !p.isAdmin) return "Not your roulette";
+  finishRoulette(s);
+  return null;
+}
+
+function finishRoulette(s: RoomState) {
+  const r = s.roulette;
+  if (!r) return;
+  s.roulette = null;
+  const puller = findPlayer(s, r.pullerId);
+  const alive = puller && !puller.left && !puller.eliminated;
+
+  if (alive) {
+    if (puller.hand.length !== 1) clearUnoRaceFor(s, puller);
+    if (puller.hand.length === 1 && !puller.calledUno) {
+      s.unoRace = { playerId: puller.id, until: now() + UNO_WINDOW_MS };
+    }
+  }
+  if (s.phase !== "playing") { touch(s); return; }
+
+  // The advance was counted from whoever played the card, so hand the turn back
+  // to them first; nextIdx steps over anyone who is out of the round.
+  s.turn = { playerIdx: idxOf(s, r.byId), stage: "play" };
+  s.turnStartedAt = now();
+  advanceTurn(s, Math.max(1, r.advance));
+  touch(s);
+}
+
 // ---------------------------------------------------------------- admin
 
 export function actKick(s: RoomState, actorId: string, targetId: string): string | null {
@@ -1113,8 +1258,18 @@ export function removePlayer(s: RoomState, t: PlayerState, msg: string) {
     t.connected = false;
     s.setAside.push(...t.hand);
     t.hand = [];
+    const rouletteMine = s.roulette && (s.roulette.pullerId === t.id || s.roulette.chooserId === t.id);
     if (s.turn.playerIdx === idxOf(s, t.id)) advanceTurn(s, 1);
     if (s.challenge?.targetId === t.id) s.challenge = null;
+    if (rouletteMine && s.roulette) {
+      // nobody is left to pull, so the card resolves the way it would have
+      const r = s.roulette;
+      s.roulette = null;
+      if (s.phase === "playing") {
+        s.turn = { playerIdx: idxOf(s, r.byId), stage: "play" };
+        advanceTurn(s, r.advance || 2);
+      }
+    }
     if (s.flipColorChoice?.playerId === t.id) {
       const top = topDiscard(s);
       const c = top ? face(s, top).color : s.currentColor;
@@ -1173,6 +1328,14 @@ export function actSkipTurn(s: RoomState, actorId: string): string | null {
     s.currentColor = s.side === "dark" ? "pink" : "red";
     log(s, "skip", "Admin resolved the color pick.");
     advanceTurn(s, 1);
+    return null;
+  }
+  if (s.roulette) {
+    const r = s.roulette;
+    const puller = findPlayer(s, r.pullerId);
+    if (!r.color) s.currentColor = s.side === "dark" ? "pink" : "red";
+    log(s, "skip", `Admin called the pull off${puller ? ` and ${puller.name} kept ${r.drawn.length} card${r.drawn.length === 1 ? "" : "s"}` : ""}.`);
+    finishRoulette(s);
     return null;
   }
   if (s.pendingDraw > 0) {
@@ -1377,6 +1540,16 @@ export function botAct(s: RoomState, bot: PlayerState) {
     actChooseColor(s, bot.id, colorModes(bot.hand, s));
     return;
   }
+  if (s.roulette) {
+    const r = s.roulette;
+    if (r.doneAt) return;
+    if (!r.color) {
+      if (r.chooserId === bot.id) actRouletteColor(s, bot.id, colorModes(bot.hand, s));
+      return;
+    }
+    if (r.pullerId === bot.id) actRoulettePull(s, bot.id);
+    return;
+  }
   if (s.turn.playerIdx !== myIdx) return;
 
   if (s.turn.stage === "double") {
@@ -1423,7 +1596,9 @@ export function botAct(s: RoomState, bot: PlayerState) {
 function playCardAsBot(s: RoomState, bot: PlayerState, card: GameCard, useFlex: boolean) {
   const f = face(s, card);
   const eff = useFlex && card.flexValue ? card.flexValue : f.value;
-  const needsColor = isWildFace(f) && s.variant !== "allwild" && eff !== "wildSwap" && eff !== "wildTargetDraw2";
+  // a color roulette is named by the victim, not by the bot playing it
+  const needsColor = isWildFace(f) && s.variant !== "allwild" && eff !== "wildSwap" &&
+    eff !== "wildTargetDraw2" && eff !== "wildColorRoulette";
   const needsTarget =
     eff === "targetDraw2" || eff === "targetDraw4" || eff === "wildTargetDraw2" || eff === "wildSwap" ||
     (eff === "7" && s.variant === "nomercy") ||
@@ -1479,9 +1654,28 @@ export function tick(s: RoomState): boolean {
   for (let guard = 0; guard < 5; guard++) {
     const elapsed = now() - s.lastActionAt;
 
+    // a finished pull clears itself once the table has seen the last card
+    if (s.roulette?.doneAt && now() - s.roulette.doneAt >= ROULETTE_HOLD_MS) {
+      finishRoulette(s);
+      changed = true;
+      continue;
+    }
+
     if (s.phase === "playing" && s.rules.turnTimer > 0 && !s.challenge && !s.flipColorChoice) {
       const cur = s.players[s.turn.playerIdx];
       if (cur && !cur.isBot && now() - s.turnStartedAt > s.rules.turnTimer * 1000) {
+        if (s.roulette) {
+          // a stalled pull still has to move: pick for them, then pull for them
+          const r = s.roulette;
+          if (!r.color) {
+            if (r.chooserId === cur.id) actRouletteColor(s, cur.id, colorModes(cur.hand, s));
+          } else if (!r.doneAt && r.pullerId === cur.id) {
+            actRoulettePull(s, cur.id);
+            s.turnStartedAt = now();
+          }
+          changed = true;
+          continue;
+        }
         if (s.pendingDraw > 0) {
           const total = s.pendingDraw;
           s.pendingDraw = 0; s.stackValue = 0;
@@ -1505,6 +1699,14 @@ export function tick(s: RoomState): boolean {
       } else if (s.flipColorChoice) {
         const t = findPlayer(s, s.flipColorChoice.playerId);
         if (t?.isBot) { botAct(s, t); changed = true; continue; }
+      } else if (s.roulette) {
+        // bots name the color and then pull at one card per bot tick, so the
+        // whole table watches the pile turn over
+        const r = s.roulette;
+        if (!r.doneAt) {
+          const t = findPlayer(s, r.color ? r.pullerId : r.chooserId);
+          if (t?.isBot) { botAct(s, t); changed = true; continue; }
+        }
       } else {
         const cur = s.players[s.turn.playerIdx];
         if (cur?.isBot && !cur.left && !cur.eliminated) { botAct(s, cur); changed = true; continue; }
@@ -1535,7 +1737,7 @@ export function buildView(s: RoomState, forPlayerId: string | null, version: num
       isTurn: s.phase === "playing" && s.players[s.turn.playerIdx]?.id === p.id,
     };
     if (mine) {
-      const canAct = s.phase === "playing" && !s.challenge && !s.flipColorChoice &&
+      const canAct = s.phase === "playing" && !s.challenge && !s.flipColorChoice && !s.roulette &&
         s.players[s.turn.playerIdx]?.id === p.id;
       base.hand = p.hand.map((c) => {
         const inDouble = s.turn.stage === "double";
@@ -1580,6 +1782,22 @@ export function buildView(s: RoomState, forPlayerId: string | null, version: num
     drawTopBackSide: drawBackTop ? (s.side === "dark" ? drawBackTop.light : (drawBackTop.dark ?? drawBackTop.light)) : null,
     challenge: s.challenge ? { targetId: s.challenge.targetId, byId: s.challenge.byId, byName: findPlayer(s, s.challenge.byId)?.name } : null,
     flipColorChoice: s.flipColorChoice ? { playerId: s.flipColorChoice.playerId } : null,
+    roulette: s.roulette ? {
+      kind: s.roulette.kind,
+      byId: s.roulette.byId,
+      byName: findPlayer(s, s.roulette.byId)?.name ?? "",
+      chooserId: s.roulette.chooserId,
+      chooserName: findPlayer(s, s.roulette.chooserId)?.name ?? "",
+      pullerId: s.roulette.pullerId,
+      pullerName: findPlayer(s, s.roulette.pullerId)?.name ?? "",
+      color: s.roulette.color,
+      // every card pulled is public: the table watches the pile turn over
+      drawn: s.roulette.drawn.map((c) => ({
+        id: c.id, light: c.light, dark: c.dark ?? null,
+        flexColor: c.flexColor ?? null, flexValue: c.flexValue ?? null, flipIcon: !!c.flipIcon,
+      })),
+      done: !!s.roulette.doneAt,
+    } : null,
     unoRace: null,
     turnStage: s.turn.stage,
     drewCardId: s.turn.drewCardId ?? null,

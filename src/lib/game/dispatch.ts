@@ -15,6 +15,9 @@ import {
   actPass,
   actPlay,
   actRemoveBot,
+  actRouletteColor,
+  actRouletteFinish,
+  actRoulettePull,
   actRename,
   actReorder,
   actSetAdmin,
@@ -82,6 +85,9 @@ export function dispatchGameCommand(
     case "uno": return actUno(state, p.id);
     case "challenge": return actChallenge(state, p.id, !!body.value);
     case "chooseColor": return actChooseColor(state, p.id, body.color as never);
+    case "rouletteColor": return actRouletteColor(state, p.id, body.color as never);
+    case "roulettePull": return actRoulettePull(state, p.id);
+    case "rouletteFinish": return actRouletteFinish(state, p.id);
     default: return "Unknown action";
   }
 }

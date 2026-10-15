@@ -133,6 +133,10 @@
 .cardwrap > .card:hover, .cardwrap > .card:focus-visible { transform: scale(var(--k, .5)); }
 .cardwrap.lift { transition: transform .22s cubic-bezier(.2,.8,.3,1); }
 .cardwrap.lift:hover { transform: translateY(-10px); }
+/* the card that ended a color pull */
+.cardwrap.roulettehit::after {
+  content: ""; position: absolute; inset: -3px; border: 2px solid var(--gold); pointer-events: none;
+}
 .handrow .cardwrap.playable, .handrow .cardwrap.flexable { transform: translateY(-12px); }
 .handrow .cardwrap.playable:hover, .handrow .cardwrap.flexable:hover { transform: translateY(-20px); }
 .cardwrap.playable::after {

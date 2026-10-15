@@ -1,6 +1,7 @@
 import {
   addPlayer, actPlay, actDraw, actPass, actUno, actChallenge,
   tick, actChooseColor, actEndDouble, actReorder, actShuffleSeats, actChat, actSetChat, actClearChat, startRound, buildView, createRoomState, addPlayer as _addP, RoomState,
+  actRouletteColor, actRoulettePull, actRouletteFinish, ROULETTE_HOLD_MS,
 } from "../src/lib/game/engine";
 import { GameCard, Face, Variant, buildAllWildDeck, buildFlipDeck, buildFlexDeck } from "../src/lib/game/model";
 import { dispatchGameCommand } from "../src/lib/game/dispatch";
@@ -392,6 +393,127 @@ ok(buildAllWildDeck().every((c) => c.light.color === "wild"), "every all wild ca
   ok(dispatchGameCommand(s, "missing", { type: "draw" }) !== null,
     "peer dispatcher rejects an unknown session");
 }
+
+// ---------------- color roulette: the victim names the color and pulls one at a time
+{
+  const s = rig(["A", "B", "C"], "nomercy");
+  const a = s.players[0], b = s.players[1], c = s.players[2];
+  const roul = mk({ color: "wild", value: "wildColorRoulette" });
+  a.hand = [roul, mk({ color: "red", value: "1" })];
+  b.hand = [mk({ color: "blue", value: "3" })];
+  c.hand = [mk({ color: "green", value: "4" })];
+  // pop() takes from the end, so the pull order is red 7, then blue 2, then green 9
+  s.drawPile = [mk({ color: "green", value: "9" }), mk({ color: "blue", value: "2" }), mk({ color: "red", value: "7" })];
+
+  ok(actPlay(s, a.id, roul.id, {}) === null, "roulette: the card plays without naming a color");
+  ok(!!s.roulette, "roulette: a pull is pending after the card");
+  ok(s.roulette!.byId === a.id, "roulette: remembers who played it");
+  ok(s.roulette!.chooserId === b.id, "roulette: the next player names the color");
+  ok(s.roulette!.pullerId === b.id, "roulette: the next player does the pulling");
+  ok(s.players[s.turn.playerIdx].id === b.id, "roulette: the turn moves to the victim");
+  ok(actRoulettePull(s, b.id) !== null, "roulette: nobody pulls before the color is named");
+  ok(actRouletteColor(s, a.id, "green") !== null, "roulette: the player of the card cannot name the color");
+
+  ok(actRouletteColor(s, b.id, "green") === null, "roulette: the victim names green");
+  ok(s.currentColor === "green", "roulette: the table follows the call");
+  const before = b.hand.length;
+  ok(actRoulettePull(s, b.id) === null, "roulette: first pull");
+  ok(b.hand.length === before + 1, "roulette: one card per pull, got " + (b.hand.length - before));
+  ok(s.roulette!.drawn.length === 1, "roulette: the pulled card is recorded");
+  ok(!s.roulette!.doneAt, "roulette: keeps going while the color is missing");
+  ok(actRoulettePull(s, b.id) === null, "roulette: second pull");
+  ok(!s.roulette!.doneAt, "roulette: still going after the second card");
+  ok(actRoulettePull(s, b.id) === null, "roulette: third pull");
+  ok(!!s.roulette!.doneAt, "roulette: stops the moment the color turns up");
+  ok(b.hand.length === before + 3, "roulette: the victim keeps every card pulled");
+  ok(s.roulette!.drawn.length === 3, "roulette: three cards recorded");
+  ok(actRoulettePull(s, b.id) !== null, "roulette: no pulling after the color landed");
+
+  const seen = buildView(s, c.id, 1, 0);
+  ok(seen.roulette !== null, "roulette: shown to the whole table");
+  ok(seen.roulette!.drawn.length === 3, "roulette: every pulled card is public");
+  ok(seen.roulette!.drawn[2].light.color === "green", "roulette: the winning card is public too");
+  ok(seen.roulette!.pullerName === "B" && seen.roulette!.byName === "A", "roulette: the view names both players");
+  ok(seen.players.every((p) => !p.hand || p.id === c.id), "roulette: no other hand leaks");
+
+  ok(actRouletteFinish(s, b.id) === null, "roulette: the victim ends the pull");
+  ok(s.roulette === null, "roulette: state clears");
+  ok(s.players[s.turn.playerIdx].id === c.id, "roulette: the victim loses their turn");
+}
+
+// ---------------- color roulette: bots name the color and pull one card per tick
+{
+  const s = rig(["A", "Bot"], "nomercy");
+  const a = s.players[0], bot = s.players[1];
+  bot.isBot = true;
+  const roul = mk({ color: "wild", value: "wildColorRoulette" });
+  a.hand = [roul, mk({ color: "red", value: "1" })];
+  bot.hand = [mk({ color: "blue", value: "3" })];
+  s.drawPile = Array.from({ length: 20 }, () => mk({ color: "yellow", value: "4" }));
+  actPlay(s, a.id, roul.id, {});
+  s.lastActionAt = Date.now() - 2000;
+  tick(s);
+  ok(!!s.roulette?.color, "roulette bot: names a color on its tick");
+  s.lastActionAt = Date.now() - 2000;
+  tick(s);
+  ok(s.roulette!.drawn.length === 1, "roulette bot: pulls exactly one card per tick, got " + s.roulette!.drawn.length);
+  ok(s.roulette!.drawn.length === bot.hand.length - 1, "roulette bot: the pull landed in its hand");
+}
+
+// ---------------- a finished pull clears itself on the host tick
+{
+  const s = rig(["A", "B", "C"], "nomercy");
+  const a = s.players[0], b = s.players[1], c = s.players[2];
+  const roul = mk({ color: "wild", value: "wildColorRoulette" });
+  a.hand = [roul, mk({ color: "red", value: "1" })];
+  b.hand = [mk({ color: "blue", value: "3" })];
+  c.hand = [mk({ color: "green", value: "4" })];
+  s.drawPile = [mk({ color: "green", value: "9" }), mk({ color: "red", value: "7" })];
+  actPlay(s, a.id, roul.id, {});
+  actRouletteColor(s, b.id, "green");
+  ok(actRoulettePull(s, b.id) === null, "auto finish: first pull");
+  ok(actRoulettePull(s, b.id) === null, "auto finish: second pull hits the color");
+  ok(!!s.roulette?.doneAt, "auto finish: the pull is marked done");
+  tick(s);
+  ok(s.roulette !== null, "auto finish: the table still sees the winning card");
+  s.roulette!.doneAt = Date.now() - ROULETTE_HOLD_MS - 20;
+  tick(s);
+  ok(s.roulette === null, "auto finish: the pull clears after the hold");
+  ok(s.players[s.turn.playerIdx].id === c.id, "auto finish: play resumes with the player after the victim");
+}
+
+// ---------------- draw until color: the player names it, the next player pulls
+{
+  const s = rig(["A", "B", "C"], "flip");
+  const a = s.players[0], b = s.players[1], c = s.players[2];
+  const wdc = mk({ color: "wild", value: "wildDrawColor" });
+  a.hand = [wdc, mk({ color: "red", value: "1" })];
+  b.hand = [mk({ color: "blue", value: "3" })];
+  c.hand = [mk({ color: "green", value: "4" })];
+  s.drawPile = [mk({ color: "blue", value: "9" }), mk({ color: "red", value: "7" })];
+
+  ok(actPlay(s, a.id, wdc.id, { color: "blue" }) === null, "draw color: the card plays with its color");
+  ok(s.roulette!.chooserId === a.id, "draw color: the player who played it names the color");
+  ok(s.roulette!.pullerId === b.id, "draw color: the next player pulls");
+  ok(s.roulette!.color === "blue", "draw color: the called color is the target");
+  ok(s.currentColor === "blue", "draw color: the table color is the called color");
+  ok(s.players[s.turn.playerIdx].id === b.id, "draw color: the turn goes to the victim");
+  ok(actRoulettePull(s, a.id) !== null, "draw color: the caller does not pull");
+  ok(actRouletteColor(s, b.id, "green") !== null, "draw color: the color is not renamed by the victim");
+
+  const before = b.hand.length;
+  ok(actRoulettePull(s, b.id) === null, "draw color: first pull");
+  ok(!s.roulette!.doneAt, "draw color: red is not the target");
+  ok(actRoulettePull(s, b.id) === null, "draw color: second pull");
+  ok(!!s.roulette!.doneAt, "draw color: stops on blue");
+  ok(b.hand.length === before + 2, "draw color: two cards pulled, got " + (b.hand.length - before));
+  const seen = buildView(s, a.id, 1, 0);
+  ok(seen.roulette!.drawn.length === 2 && seen.roulette!.drawn[1].light.color === "blue",
+    "draw color: the caller also watches every card");
+  actRouletteFinish(s, b.id);
+  ok(s.players[s.turn.playerIdx].id === c.id, "draw color: the victim loses the turn");
+}
+
 
 console.log(failures === 0 ? "ALL TESTS PASSED" : failures + " FAILURES");
 process.exit(failures ? 1 : 0);

@@ -22,8 +22,8 @@ function base(v: FaceValue, variant: Variant): string {
     case "wildReverseDraw4": return "Name a color, reverse the order, and add 4 to the stack.";
     case "wildDraw6": return "Name a color and add 6 to the stack.";
     case "wildDraw10": return "Name a color and add 10 to the stack.";
-    case "wildColorRoulette": return "Name a color. Next player draws until they hit it, then loses their turn.";
-    case "wildDrawColor": return "Name a color. Next player draws until they hit it.";
+    case "wildColorRoulette": return "The next player names a color, then pulls one card at a time until it turns up. Their turn is lost.";
+    case "wildDrawColor": return "Name a color. The next player pulls one card at a time until that color turns up.";
     case "wildAllFlip": return "Every power token at the table flips over.";
     case "wildReverse": return "Turn order flips.";
     case "wildSkip": return "Next player loses their turn.";

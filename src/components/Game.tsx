@@ -141,7 +141,14 @@ export default function Game({ code, view, meId, act, onLeave }: {
   if (!me) return null;
 
   const challengeMine = view.challenge?.targetId === meId;
-  const blocked = !!view.challenge || !!view.flipColorChoice;
+  const blocked = !!view.challenge || !!view.flipColorChoice || !!view.roulette;
+
+  // A color pull in progress: one card at a time, every card face up for the
+  // whole table, until the named color turns up.
+  const roulette = view.roulette;
+  const rouletteColor = roulette?.color ? roulette.color[0].toUpperCase() + roulette.color.slice(1) : null;
+  const rouletteShown = roulette ? roulette.drawn.slice(-10) : [];
+  const rouletteHidden = roulette ? roulette.drawn.length - rouletteShown.length : 0;
 
   // Whether a given side of a card actually asks you to pick a player. A
   // flexed Skip becomes Skip Everyone, so there is nobody to aim it at, and a
@@ -170,7 +177,8 @@ export default function Game({ code, view, meId, act, onLeave }: {
     const canFlexOnly = !!c.flexPlayable && !canNormal;
     if (!canNormal && !canFlexOnly) { playSound("error"); return; }
     const wild = f.color === "wild";
-    const needsColor = wild && !isAllWild && f.value !== "wildSwap" && f.value !== "wildTargetDraw2";
+    // a color roulette is named by the player who has to pull, not here
+    const needsColor = wild && !isAllWild && f.value !== "wildSwap" && f.value !== "wildTargetDraw2" && f.value !== "wildColorRoulette";
     const needsTarget = needsTargetFor(c, canFlexOnly);
     const flexChoice = canNormal && !!c.flexUpgradable;
     if (canFlexOnly && !needsColor && !needsTarget) { act("play", { cardId: c.id, useFlex: true }); return; }
@@ -183,7 +191,7 @@ export default function Game({ code, view, meId, act, onLeave }: {
     if (!sel) return;
     const f = faceOf(view, sel);
     const wild = f.color === "wild";
-    const needsColor = wild && !isAllWild && f.value !== "wildSwap" && f.value !== "wildTargetDraw2";
+    const needsColor = wild && !isAllWild && f.value !== "wildSwap" && f.value !== "wildTargetDraw2" && f.value !== "wildColorRoulette";
     if (needsColor && !selColor) { playSound("error"); return; }
     const useFlex = !!sel.flexPlayable || selFlex;
     const effVal = useFlex && sel.flexValue ? sel.flexValue : f.value;
@@ -202,6 +210,11 @@ export default function Game({ code, view, meId, act, onLeave }: {
     if (view.phase !== "playing") return "";
     if (view.challenge) return challengeMine ? `${view.challenge.byName} hit you with a Draw 4` : "A Draw 4 is being challenged";
     if (view.flipColorChoice) return view.flipColorChoice.playerId === meId ? "Pick a color" : "Waiting on a color";
+    if (roulette) {
+      if (!rouletteColor) return roulette.chooserId === meId ? "Name the color to pull for" : `Waiting for ${roulette.chooserName} to name a color`;
+      if (roulette.done) return `${roulette.pullerName} hit ${rouletteColor}`;
+      return roulette.pullerId === meId ? `Pull until ${rouletteColor}` : `${roulette.pullerName} pulls until ${rouletteColor}`;
+    }
     if (myTurn) {
       if (view.pendingDraw > 0) return `Stack it or take ${view.pendingDraw}`;
       if (view.turnStage === "drewCard") return "Play it or pass";
@@ -312,6 +325,36 @@ export default function Game({ code, view, meId, act, onLeave }: {
               </HoldArea>
             </div>
 
+            {roulette && (
+              <div className="flex flex-col items-center gap-1.5 a-fade w-full px-1">
+                <span className="text-[11px] text-[var(--ink2)] text-center">
+                  {roulette.done
+                    ? `${roulette.pullerName} hit ${rouletteColor} in ${roulette.drawn.length}`
+                    : !rouletteColor
+                      ? `${roulette.chooserId === meId ? "You name" : `${roulette.chooserName} names`} the color to pull for`
+                      : `${roulette.pullerId === meId ? "You pull" : `${roulette.pullerName} pulls`} until ${rouletteColor} · ${roulette.drawn.length} so far`}
+                </span>
+                <div className="flex items-center justify-center gap-1 flex-wrap max-w-[min(520px,84vw)] min-h-[46px]">
+                  {rouletteHidden > 0 && <span className="text-[11px] text-[var(--mut)] pr-0.5">+{rouletteHidden}</span>}
+                  {rouletteShown.map((c, i) => (
+                    <span
+                      key={c.id}
+                      className={`cardwrap [--k:var(--k-seat)] ${i === rouletteShown.length - 1 ? "a-pop" : ""} ${roulette.done && i === rouletteShown.length - 1 ? "roulettehit" : ""}`}
+                    >
+                      <CardView
+                        face={faceOf(view, c)}
+                        flipDark={isFlip && view.side === "dark"}
+                        flipLight={isFlip && view.side === "light"}
+                        flex={isFlex ? { flexColor: c.flexColor, flexValue: c.flexValue, flipIcon: c.flipIcon } : null}
+                        useFlexArt={isFlex}
+                      />
+                    </span>
+                  ))}
+                  {roulette.drawn.length === 0 && <span className="text-[11px] text-[var(--mut)]">nothing pulled yet</span>}
+                </div>
+              </div>
+            )}
+
             <div className="flex items-center gap-2 text-[11px] text-[var(--mut)]">
               {pageCount > 1 && (
                 <button className="iconbtn !w-7 !h-7" disabled={page === 0}
@@ -342,6 +385,16 @@ export default function Game({ code, view, meId, act, onLeave }: {
                   <button key={c} className="swatch !w-9 !h-9" style={{ background: colorHex(c) }} onClick={() => act("chooseColor", { color: c })} aria-label={c} />
                 ))}
               </div>
+            )}
+            {roulette && roulette.chooserId === meId && !roulette.color && (
+              <div className="flex gap-2 a-pop">
+                {colorSet.map((c) => (
+                  <button key={c} className="swatch !w-9 !h-9" style={{ background: colorHex(c) }} onClick={() => { playSound("click"); act("rouletteColor", { color: c }); }} aria-label={c} />
+                ))}
+              </div>
+            )}
+            {roulette && roulette.pullerId === meId && roulette.color && !roulette.done && (
+              <button className="btn sm acc a-pop" onClick={() => { playSound("click"); act("roulettePull"); }}>Pull a card</button>
             )}
             {myTurn && !blocked && view.turnStage === "drewCard" && <button className="btn sm ghost a-pop" onClick={() => act("pass")}>Pass</button>}
             {myTurn && !blocked && view.turnStage === "double" && <button className="btn sm ghost a-pop" onClick={() => act("endDouble")}>End turn</button>}

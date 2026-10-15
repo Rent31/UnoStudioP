@@ -42,6 +42,19 @@ export interface ChatMessageView {
   id: number; playerId: string; name: string; text: string; at: number; system?: boolean;
 }
 
+export interface RouletteView {
+  kind: "wildColorRoulette" | "wildDrawColor";
+  byId: string;
+  byName: string;
+  chooserId: string;
+  chooserName: string;
+  pullerId: string;
+  pullerName: string;
+  color: ColorName | null;
+  drawn: { id: string; light: Face; dark: Face | null; flexColor: ColorName | null; flexValue: FlexValue | null; flipIcon: boolean }[];
+  done: boolean;
+}
+
 export interface ViewData {
   phase: "lobby" | "playing" | "roundOver" | "gameOver";
   variant: Variant;
@@ -66,7 +79,8 @@ export interface ViewData {
   drawTopBackSide: Face | null;
   challenge: { targetId: string; byId: string; byName?: string } | null;
   flipColorChoice: { playerId: string } | null;
-  turnStage: "play" | "drewCard" | "double";
+  roulette: RouletteView | null;
+  turnStage: "play" | "drewCard" | "double" | "roulette";
   drewCardId: string | null;
   roundWinnerId: string | null;
   roundNote: string;
