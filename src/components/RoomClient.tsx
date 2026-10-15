@@ -121,7 +121,6 @@ export default function RoomClient({ code }: { code: string }) {
   const [joinBusy, setJoinBusy] = useState(false);
   const [joinErr, setJoinErr] = useState("");
   const [isHost, setIsHost] = useState(false);
-  const [link, setLink] = useState<{ brokers: number; direct: number; relay: number }>({ brokers: 0, direct: 0, relay: 0 });
 
   const sessionRef = useRef<Session | null>(null);
   const viewRef = useRef<ViewData | null>(null);
@@ -151,7 +150,6 @@ export default function RoomClient({ code }: { code: string }) {
   const closeRoomRef = useRef<(() => Promise<void>) | null>(null);
   const relayRef = useRef<EncryptedRelay | null>(null);
   const relayHandlers = useRef(new Map<RelayKind, (data: unknown, from: string) => void>());
-  const relayPeers = useRef(new Map<string, number>());
   const selfPeerRef = useRef("");
   const announceRef = useRef<(() => void) | null>(null);
   // how recently each peer was heard from over WebRTC rather than the relay
@@ -378,12 +376,10 @@ export default function RoomClient({ code }: { code: string }) {
         selfId,
         (m: RelayMessage) => {
           if (stopped || m.from === selfId) return;
-          relayPeers.current.set(m.from, Date.now());
           relayHandlers.current.get(m.kind)?.(m.data, m.from);
         },
         () => {
           if (stopped) return;
-          setLink((prev) => ({ ...prev, brokers: relayRef.current?.connectedCount ?? 0 }));
           // say hello on the new transport at once, so nobody waits a whole
           // presence tick to learn our key
           announceRef.current?.();
@@ -686,21 +682,10 @@ export default function RoomClient({ code }: { code: string }) {
       const monitor = () => {
         if (stopped) return;
         const now = Date.now();
-        let direct = 0;
-        let relay = 0;
+        // forget peers that have gone quiet, so the maps cannot grow forever
         for (const [peerId, at] of directPeers.current) {
           if (now - at > HOST_TTL_MS) directPeers.current.delete(peerId);
-          else direct += 1;
         }
-        for (const [peerId, at] of relayPeers.current) {
-          if (now - at > HOST_TTL_MS) { relayPeers.current.delete(peerId); continue; }
-          if (needsRelay(peerId)) relay += 1;
-        }
-        setLink((prev) => (
-          prev.direct === direct && prev.relay === relay && prev.brokers === (relayRef.current?.connectedCount ?? 0)
-            ? prev
-            : { brokers: relayRef.current?.connectedCount ?? 0, direct, relay }
-        ));
 
         const me = selfCandidate();
         const list = [...presenceRef.current.values()];
@@ -821,7 +806,6 @@ export default function RoomClient({ code }: { code: string }) {
       handoffRef.current = null;
       announceRef.current = null;
       relayHandlers.current.clear();
-      relayPeers.current.clear();
       directPeers.current.clear();
       relayRef.current?.stop();
       relayRef.current = null;
@@ -960,13 +944,6 @@ export default function RoomClient({ code }: { code: string }) {
           <div className="text-[11px] bg-[var(--surf)] text-[var(--mut)] border border-[var(--line2)] px-3 py-2">{networkNote}</div>
         </div>
       )}
-      <div className="fixed bottom-1.5 left-2.5 z-30 pointer-events-none text-[10px] text-[var(--mut)] opacity-60 tabular-nums">
-        {[
-          link.brokers ? `relay ${link.brokers}/5` : "relay off",
-          link.direct ? `${link.direct} direct` : null,
-          link.relay ? `${link.relay} via relay` : null,
-        ].filter(Boolean).join(" · ")}
-      </div>
       {toast && (
         <div className="fixed bottom-28 left-1/2 -translate-x-1/2 z-50 a-pop">
           <div className="text-[12px] bg-[#3a140e] text-[#ffb9ab] border border-[#7c2418] px-4 py-2">{toast}</div>
