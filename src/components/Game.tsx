@@ -17,6 +17,7 @@ import { playSound } from "@/lib/sound";
 import { useHold } from "@/lib/useHold";
 import { useMedia } from "@/lib/useMedia";
 import { useFluidScale } from "@/lib/useFluidScale";
+import { useDragScroll } from "@/lib/useDragScroll";
 import PlayerList from "@/components/PlayerList";
 import SidePanel from "@/components/SidePanel";
 
@@ -64,8 +65,9 @@ export default function Game({ code, view, meId, act, onLeave }: {
   const docked = useMedia("(min-width: 720px)");
   useFluidScale(feltRef, handRef, {
     maxOpponentCards: Math.max(1, ...view.players.filter((p) => p.id !== meId && !p.left).map((p) => p.cardCount), 1),
-    myCards: me?.hand?.length ?? 7,
   });
+  // a large hand overflows to the right: swipe it (touch) or drag/wheel it (mouse)
+  useDragScroll(handRef);
   const [invited, setInvited] = useState(false);
 
   const copyInvite = async () => {
@@ -422,7 +424,7 @@ export default function Game({ code, view, meId, act, onLeave }: {
         </div>
 
         <div ref={handRef} className={`handscroll ${myTurn && !blocked ? "myturn" : ""}`}>
-          {/* a bigger hand overlaps harder so it stays readable before scrolling */}
+          {/* cards keep their size however big the hand gets: the row runs off the right edge and this strip scrolls (swipe, drag, or wheel) */}
           <div className="handrow">
             {hand.map((c, i) => {
               const f = faceOf(view, c);
