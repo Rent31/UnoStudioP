@@ -208,7 +208,7 @@
 
 /* badge on a seat whose player has called UNO */
 .unotag {
-  font-family: var(--font-anton), "Arial Narrow", sans-serif;
+  font-family: "Anton", var(--font-anton), "Arial Narrow", sans-serif;
   font-size: 9px;
   line-height: 1;
   letter-spacing: .08em;
@@ -299,7 +299,7 @@
 /* cards overlap proportionally to their own scale */
 .handrow > * + * { margin-left: calc(-120px * var(--k-hand) * var(--hand-overlap, .42)); }
 
-.tabfont { font-family: var(--font-anton), "Arial Narrow", sans-serif; letter-spacing: .07em; text-transform: uppercase; }
+.tabfont { font-family: "Anton", var(--font-anton), "Arial Narrow", sans-serif; letter-spacing: .07em; text-transform: uppercase; }
 
 /* ------------------------------------------------------------------ */
 /* Motion                                                              */
@@ -342,7 +342,7 @@
 .unobtn {
   width: 76px; height: 76px; border-radius: 50%;
   background: var(--acc); color: #fff;
-  font-family: var(--font-anton), sans-serif; font-size: 24px; letter-spacing: .03em;
+  font-family: "Anton", var(--font-anton), sans-serif; font-size: 24px; letter-spacing: .03em;
   border: 3px solid #fff;
   animation: ringPulse 1.5s ease-out infinite;
   transition: transform .12s ease, background .18s ease;

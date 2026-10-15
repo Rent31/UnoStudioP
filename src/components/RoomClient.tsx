@@ -21,6 +21,8 @@ import {
   savedName,
 } from "@/lib/client";
 import { playSound, eventSound, initSoundPref, type SoundKind } from "@/lib/sound";
+import { EncryptedRelay, type RelayKind, type RelayMessage } from "@/lib/relay";
+import { APP_ID, rtcConfig } from "@/lib/net";
 import {
   addPlayer,
   buildView,
@@ -71,13 +73,14 @@ interface MirrorMessage {
   version: number;
 }
 
-const APP_ID = "uno-studio-p2p-v1";
 const MAX_PLAYERS = 10;
 const SELF = "self";
 /** how long the owner waits for a live host before taking their own room back */
 const CLAIM_DELAY_MS = 1200;
 /** safety valve: take the room if an outranked host never hands it over */
 const OUTRANK_PATIENCE_MS = 5000;
+/** a peer we have not heard from directly in this long also gets a relay copy */
+const DIRECT_STALE_MS = 6000;
 
 const SOUND_RANK: Record<string, number> = {
   win: 100, eliminate: 90, catch: 85, flip: 80, roulette: 70, stack: 65,
@@ -118,6 +121,7 @@ export default function RoomClient({ code }: { code: string }) {
   const [joinBusy, setJoinBusy] = useState(false);
   const [joinErr, setJoinErr] = useState("");
   const [isHost, setIsHost] = useState(false);
+  const [link, setLink] = useState<{ brokers: number; direct: number; relay: number }>({ brokers: 0, direct: 0, relay: 0 });
 
   const sessionRef = useRef<Session | null>(null);
   const viewRef = useRef<ViewData | null>(null);
@@ -145,6 +149,13 @@ export default function RoomClient({ code }: { code: string }) {
   const sendCommandRef = useRef<((command: GameCommand) => Promise<void>) | null>(null);
   const hostCommandRef = useRef<((pid: string, command: GameCommand, peerId?: string) => void) | null>(null);
   const closeRoomRef = useRef<(() => Promise<void>) | null>(null);
+  const relayRef = useRef<EncryptedRelay | null>(null);
+  const relayHandlers = useRef(new Map<RelayKind, (data: unknown, from: string) => void>());
+  const relayPeers = useRef(new Map<string, number>());
+  const selfPeerRef = useRef("");
+  const announceRef = useRef<(() => void) | null>(null);
+  // how recently each peer was heard from over WebRTC rather than the relay
+  const directPeers = useRef(new Map<string, number>());
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   sessionRef.current = session ?? null;
@@ -199,6 +210,11 @@ export default function RoomClient({ code }: { code: string }) {
     desiredName.current = loadPendingName(code) || storedSession?.name || savedName();
     setName(desiredName.current);
 
+    const needsRelay = (peerId: string) => {
+      const at = directPeers.current.get(peerId);
+      return !at || Date.now() - at > DIRECT_STALE_MS;
+    };
+
     interface RoomAction {
       send: (data: unknown, opts?: { target?: string }) => Promise<unknown>;
       onMessage: ((data: any, meta: { peerId: string }) => void) | null;
@@ -209,6 +225,9 @@ export default function RoomClient({ code }: { code: string }) {
     let presenceAction!: RoomAction;
     let mirrorAction!: RoomAction;
     let handoffAction!: RoomAction;
+    let sendHostBeat!: (data: unknown, target?: string) => void;
+    let sendMirrorCopy!: (data: unknown, target?: string) => void;
+    let sendHandoffPacket!: (data: unknown, target?: string) => void;
     let bundle: HostBundle | null = null;
     const restoredMirror = loadMirror<MirrorMessage>(code);
     if (restoredMirror?.state) {
@@ -296,14 +315,14 @@ export default function RoomClient({ code }: { code: string }) {
       }, 300);
       snapshotTimer = setInterval(() => publishAllRef.current?.(), 1000);
       helloTimer = setInterval(() => {
-        hostHello.send({ live: true, hostPid: bundle?.localPid, joinedAt: joinedAtRef.current }).catch(() => {});
+        sendHostBeat({ live: true, hostPid: bundle?.localPid, joinedAt: joinedAtRef.current });
         if (bundle) hostBeatRef.current = { peerId: SELF, pid: bundle.localPid, joinedAt: joinedAtRef.current, at: Date.now() };
       }, 2000);
-      mirrorTimer = setInterval(() => { if (bundle) mirrorAction.send({ state: bundle.state, version: bundle.version }).catch(() => {}); }, 2000);
+      mirrorTimer = setInterval(() => { if (bundle) sendMirrorCopy({ state: bundle.state, version: bundle.version }); }, 2000);
       const v = localView(0);
       if (v) acceptView(v);
-      hostHello.send({ live: true, hostPid: localPid, joinedAt: joinedAtRef.current }).catch(() => {});
-      mirrorAction.send({ state, version }).catch(() => {});
+      sendHostBeat({ live: true, hostPid: localPid, joinedAt: joinedAtRef.current });
+      sendMirrorCopy({ state, version });
       publishAllRef.current?.();
     };
 
@@ -311,7 +330,7 @@ export default function RoomClient({ code }: { code: string }) {
     // copy behind so whoever takes over is not behind.
     const onHide = () => {
       if (isHostRef.current && bundle) {
-        mirrorAction?.send({ state: bundle.state, version: bundle.version }).catch(() => {});
+        sendMirrorCopy?.({ state: bundle.state, version: bundle.version });
         saveBundle();
       }
     };
@@ -325,7 +344,7 @@ export default function RoomClient({ code }: { code: string }) {
       const others = [...presenceRef.current.values()].filter((c) => c.peerId !== SELF);
       const best = pickHost(others, now);
       if (!best) return;
-      handoffAction.send({ state: bundle.state, version: bundle.version }, { target: best.peerId }).catch(() => {});
+      sendHandoffPacket({ state: bundle.state, version: bundle.version }, best.peerId);
     };
     handoffRef.current = handoffToNext;
 
@@ -341,24 +360,52 @@ export default function RoomClient({ code }: { code: string }) {
     };
 
     (async () => {
-      const { joinRoom } = await import("trystero");
+      const { joinRoom, selfId } = await import("trystero");
       if (stopped) return;
 
       const room = joinRoom(
-        {
-          appId: APP_ID,
-          password: code,
-          rtcConfig: {
-            iceServers: [
-              { urls: "stun:stun.l.google.com:19302" },
-              { urls: "stun:stun.cloudflare.com:3478" },
-            ],
-          },
-        },
+        { appId: APP_ID, password: code, rtcConfig: rtcConfig() },
         code,
-        { onJoinError: () => !stopped && setNetworkNote("Peer connection failed. Retrying…") },
+        { onJoinError: () => !stopped && setNetworkNote("Peer connection failed. Trying the relay…") },
       );
       roomRef.current = room;
+      selfPeerRef.current = selfId;
+
+      // WebRTC first, but plenty of networks refuse to punch through at all:
+      // this mesh carries the same packets over plain WebSocket/TLS instead.
+      relayRef.current = new EncryptedRelay(
+        code,
+        selfId,
+        (m: RelayMessage) => {
+          if (stopped || m.from === selfId) return;
+          relayPeers.current.set(m.from, Date.now());
+          relayHandlers.current.get(m.kind)?.(m.data, m.from);
+        },
+        () => {
+          if (stopped) return;
+          setLink((prev) => ({ ...prev, brokers: relayRef.current?.connectedCount ?? 0 }));
+          // say hello on the new transport at once, so nobody waits a whole
+          // presence tick to learn our key
+          announceRef.current?.();
+        },
+      );
+      void relayRef.current.start();
+
+      /** send one packet down both transports; the relay only where it is needed */
+      const mkSender = (kind: RelayKind, action: RoomAction) => (data: unknown, target?: string) => {
+        action.send(data, target ? { target } : undefined).catch(() => {});
+        const relay = relayRef.current;
+        if (relay && (!target || needsRelay(target))) void relay.send(kind, data, target);
+      };
+
+      /** receive from both transports; the trystero peer id and the relay id are the same */
+      const onWire = (kind: RelayKind, action: RoomAction, handler: (data: any, from: string) => void) => {
+        action.onMessage = ((data: any, meta: { peerId: string }) => {
+          directPeers.current.set(meta.peerId, Date.now());
+          handler(data, meta.peerId);
+        }) as never;
+        relayHandlers.current.set(kind, handler);
+      };
 
       hostHello = room.makeAction<any>("host") as unknown as RoomAction;
       presenceAction = room.makeAction<any>("presence") as unknown as RoomAction;
@@ -370,6 +417,17 @@ export default function RoomClient({ code }: { code: string }) {
       handoffAction = room.makeAction<any>("handoff") as unknown as RoomAction;
       const errorAction = room.makeAction<any>("error");
       const closedAction = room.makeAction<any>("closed");
+
+      const sendPresenceMsg = mkSender("presence", presenceAction);
+      const sendWelcome = mkSender("welcome", welcomeAction);
+      const sendSnapshot = mkSender("snapshot", snapshotAction);
+      const sendError = mkSender("error", errorAction);
+      const sendClosed = mkSender("closed", closedAction);
+      const sendJoin = mkSender("join", joinAction);
+      const sendCommandWire = mkSender("command", commandAction);
+      sendHostBeat = mkSender("host", hostHello);
+      sendMirrorCopy = mkSender("mirror", mirrorAction);
+      sendHandoffPacket = mkSender("handoff", handoffAction);
 
       const persistAndLocalView = () => {
         if (!bundle) return;
@@ -390,9 +448,9 @@ export default function RoomClient({ code }: { code: string }) {
             view: peerView,
             joinedAt: player.joinedAt,
           };
-          welcomeAction.send(data, { target: peerId }).catch(() => {});
+          sendWelcome(data, peerId);
         } else {
-          snapshotAction.send({ view: peerView }, { target: peerId }).catch(() => {});
+          sendSnapshot({ view: peerView }, peerId);
         }
       };
 
@@ -416,7 +474,7 @@ export default function RoomClient({ code }: { code: string }) {
         const error = dispatchGameCommand(bundle.state, pid, command);
         const ticked = tick(bundle.state);
         if (error) {
-          if (peerId) errorAction.send({ message: error }, { target: peerId }).catch(() => {});
+          if (peerId) sendError({ message: error }, peerId);
           else { showToast(error); playSound("error"); }
           if (ticked) { bundle.version += 1; publishAll(); }
           return;
@@ -433,7 +491,7 @@ export default function RoomClient({ code }: { code: string }) {
 
       // Host announces itself. A participant sends credentials only to the
       // peer that made this announcement, never to the rest of the mesh.
-      hostHello.onMessage = (data: any, { peerId }: { peerId: string }) => {
+      onWire("host", hostHello, (data: any, peerId: string) => {
         if (data?.hostPid === sessionRef.current?.pid) return;
         const now = Date.now();
         const prev = hostBeatRef.current;
@@ -456,16 +514,16 @@ export default function RoomClient({ code }: { code: string }) {
           }
           setNetworkNote(viewRef.current ? "" : "Joining the room…");
         }
-      };
+      });
 
       // Everybody says who they are, so the room can always work out who
       // should be running it without anybody being in charge of the answer.
-      presenceAction.onMessage = (data: HostCandidate, { peerId }: { peerId: string }) => {
+      onWire("presence", presenceAction, (data: HostCandidate, peerId: string) => {
         if (!data?.pid || data.pid === sessionRef.current?.pid) return;
         presenceRef.current.set(data.pid, { ...data, peerId, at: Date.now() });
-      };
+      });
 
-      joinAction.onMessage = (data: JoinMessage, { peerId }: { peerId: string }) => {
+      onWire("join", joinAction, (data: JoinMessage, peerId: string) => {
         if (!bundle || !isHostRef.current) return;
         const state = bundle.state;
         let player = data.pid && data.tok
@@ -490,7 +548,7 @@ export default function RoomClient({ code }: { code: string }) {
             player = addPlayer(state, cleanName, false, true);
             bundle.version += 1;
           } else if (live >= MAX_PLAYERS) {
-            errorAction.send({ message: "Room is full." }, { target: peerId }).catch(() => {});
+            sendError({ message: "Room is full." }, peerId);
             return;
           } else {
             const cleanName = String(data.name ?? "").replace(/\s+/g, " ").trim().slice(0, 14);
@@ -505,9 +563,9 @@ export default function RoomClient({ code }: { code: string }) {
         peerPlayers.current.set(peerId, player.id);
         sendViewTo(peerId, player.id, true);
         publishAll();
-      };
+      });
 
-      welcomeAction.onMessage = (data: WelcomeMessage, { peerId }: { peerId: string }) => {
+      onWire("welcome", welcomeAction, (data: WelcomeMessage, peerId: string) => {
         if (isHostRef.current) return;
         hostPeerRef.current = peerId;
         saveSession(code, data.session);
@@ -520,22 +578,22 @@ export default function RoomClient({ code }: { code: string }) {
         setJoinErr("");
         firstView.current = true;
         acceptView(data.view);
-      };
+      });
 
-      snapshotAction.onMessage = (data: { view: ViewData }, { peerId }: { peerId: string }) => {
+      onWire("snapshot", snapshotAction, (data: { view: ViewData }, peerId: string) => {
         if (isHostRef.current || peerId !== hostPeerRef.current) return;
         acceptView(data.view);
-      };
+      });
 
       // a copy of the whole room, so this browser can take over if the host
       // goes away mid game
-      mirrorAction.onMessage = (data: MirrorMessage, { peerId }: { peerId: string }) => {
+      onWire("mirror", mirrorAction, (data: MirrorMessage, peerId: string) => {
         if (!data?.state) return;
         if (!isHostRef.current && hostPeerRef.current && peerId !== hostPeerRef.current) return;
         keepMirror(normalizeState(data.state), data.version ?? 1);
-      };
+      });
 
-      handoffAction.onMessage = (data: MirrorMessage, { peerId }: { peerId: string }) => {
+      onWire("handoff", handoffAction, (data: MirrorMessage, peerId: string) => {
         if (!data?.state) return;
         const state = normalizeState(data.state);
         mirrorRef.current = { state, version: data.version ?? 1 };
@@ -543,29 +601,29 @@ export default function RoomClient({ code }: { code: string }) {
         hostBeatRef.current = null;
         hostPeerRef.current = peerId;
         claimHost();
-      };
+      });
 
-      commandAction.onMessage = (command: GameCommand, { peerId }: { peerId: string }) => {
+      onWire("command", commandAction, (command: GameCommand, peerId: string) => {
         if (!bundle || !isHostRef.current) return;
         const pid = peerPlayers.current.get(peerId);
         if (!pid) {
-          errorAction.send({ message: "Rejoin the room." }, { target: peerId }).catch(() => {});
+          sendError({ message: "Rejoin the room." }, peerId);
           return;
         }
         runCommand(pid, command, peerId);
-      };
+      });
 
-      errorAction.onMessage = (data: { message: string }, { peerId }: { peerId: string }) => {
+      onWire("error", errorAction, (data: { message: string }, peerId: string) => {
         if (isHostRef.current || (hostPeerRef.current && peerId !== hostPeerRef.current)) return;
         setJoinBusy(false);
         setJoinErr(data.message);
         showToast(data.message);
         playSound("error");
-      };
+      });
 
-      closedAction.onMessage = (_data: any, { peerId }: { peerId: string }) => {
+      onWire("closed", closedAction, (_data: any, peerId: string) => {
         if (!isHostRef.current && peerId === hostPeerRef.current) setGone("The room was closed by the owner.");
-      };
+      });
 
       const requestJoin = () => {
         const hostPeer = hostPeerRef.current;
@@ -579,7 +637,7 @@ export default function RoomClient({ code }: { code: string }) {
           tok: current?.tok,
         };
         setJoinBusy(true);
-        joinAction.send(data, { target: hostPeer }).catch(() => setNetworkNote("Could not reach the host. Retrying…"));
+        sendJoin(data, hostPeer);
       };
       sendJoinRef.current = requestJoin;
 
@@ -590,21 +648,22 @@ export default function RoomClient({ code }: { code: string }) {
           playSound("error");
           return;
         }
-        await commandAction.send(command, { target: hostPeer });
+        sendCommandWire(command, hostPeer);
       };
 
       closeRoomRef.current = async () => {
-        await closedAction.send({ closed: true }).catch(() => {});
+        sendClosed({ closed: true });
         clearHostRoom(code);
         clearSession(code);
         await room.leave();
       };
 
       room.onPeerJoin = (peerId) => {
-        if (isHostRef.current) hostHello.send({ live: true, hostPid: bundle?.localPid, joinedAt: joinedAtRef.current }, { target: peerId }).catch(() => {});
+        if (isHostRef.current) sendHostBeat({ live: true, hostPid: bundle?.localPid, joinedAt: joinedAtRef.current }, peerId);
       };
 
       room.onPeerLeave = (peerId) => {
+        directPeers.current.delete(peerId); // from here on it needs the relay
         presenceRef.current.forEach((c, pid) => { if (c.peerId === peerId) presenceRef.current.delete(pid); });
         if (isHostRef.current && bundle) {
           const pid = peerPlayers.current.get(peerId);
@@ -627,6 +686,22 @@ export default function RoomClient({ code }: { code: string }) {
       const monitor = () => {
         if (stopped) return;
         const now = Date.now();
+        let direct = 0;
+        let relay = 0;
+        for (const [peerId, at] of directPeers.current) {
+          if (now - at > HOST_TTL_MS) directPeers.current.delete(peerId);
+          else direct += 1;
+        }
+        for (const [peerId, at] of relayPeers.current) {
+          if (now - at > HOST_TTL_MS) { relayPeers.current.delete(peerId); continue; }
+          if (needsRelay(peerId)) relay += 1;
+        }
+        setLink((prev) => (
+          prev.direct === direct && prev.relay === relay && prev.brokers === (relayRef.current?.connectedCount ?? 0)
+            ? prev
+            : { brokers: relayRef.current?.connectedCount ?? 0, direct, relay }
+        ));
+
         const me = selfCandidate();
         const list = [...presenceRef.current.values()];
         if (me) list.push(me);
@@ -638,7 +713,7 @@ export default function RoomClient({ code }: { code: string }) {
           // live state rather than making them reconstruct it.
           if (best && best.pid !== bundle.localPid && best.peerId !== SELF &&
               isBetterHost(best, { joinedAt: joinedAtRef.current, pid: bundle.localPid })) {
-            handoffAction.send({ state: bundle.state, version: bundle.version }, { target: best.peerId }).catch(() => {});
+            sendHandoffPacket({ state: bundle.state, version: bundle.version }, best.peerId);
             stopHosting();
           }
           return;
@@ -655,11 +730,12 @@ export default function RoomClient({ code }: { code: string }) {
         } else outrankSinceRef.current = 0;
       };
 
-      presenceTimer = setInterval(() => {
+      announceRef.current = () => {
         const me = selfCandidate();
         if (!me || !me.pid) return;
-        presenceAction.send({ pid: me.pid, joinedAt: me.joinedAt, canHost: me.canHost, at: Date.now() }).catch(() => {});
-      }, PRESENCE_INTERVAL_MS);
+        sendPresenceMsg({ pid: me.pid, joinedAt: me.joinedAt, canHost: me.canHost, at: Date.now() });
+      };
+      presenceTimer = setInterval(() => announceRef.current?.(), PRESENCE_INTERVAL_MS);
       monitorTimer = setInterval(monitor, 1000);
 
       // ------------------------------------------------ starting up
@@ -712,12 +788,13 @@ export default function RoomClient({ code }: { code: string }) {
         heartbeatTimer = setInterval(() => {
           const current = sessionRef.current;
           if (!current || !hostPeerRef.current) return;
-          commandAction.send({ type: "ping", nonce: nonce() }, { target: hostPeerRef.current }).catch(() => {});
+          sendCommandWire({ type: "ping", nonce: nonce() }, hostPeerRef.current);
         }, 8000);
         noHostTimer = setTimeout(() => {
-          if (!viewRef.current && !hostPeerRef.current) {
-            setNetworkNote("No host found yet. Check the code, or ask whoever opened the room to come back.");
-          }
+          if (viewRef.current || hostPeerRef.current) return;
+          setNetworkNote(relayRef.current?.connected
+            ? "No host found yet. Check the code, or ask whoever opened the room to come back."
+            : "Cannot reach the room. Your network is blocking both peer-to-peer and the relay - try mobile data, or another network.");
         }, 10000);
       }
 
@@ -742,6 +819,12 @@ export default function RoomClient({ code }: { code: string }) {
       publishAllRef.current = null;
       stopHostingRef.current = null;
       handoffRef.current = null;
+      announceRef.current = null;
+      relayHandlers.current.clear();
+      relayPeers.current.clear();
+      directPeers.current.clear();
+      relayRef.current?.stop();
+      relayRef.current = null;
       closeRoomRef.current = null;
       roomRef.current?.leave().catch(() => {});
       roomRef.current = null;
@@ -877,6 +960,13 @@ export default function RoomClient({ code }: { code: string }) {
           <div className="text-[11px] bg-[var(--surf)] text-[var(--mut)] border border-[var(--line2)] px-3 py-2">{networkNote}</div>
         </div>
       )}
+      <div className="fixed bottom-1.5 left-2.5 z-30 pointer-events-none text-[10px] text-[var(--mut)] opacity-60 tabular-nums">
+        {[
+          link.brokers ? `relay ${link.brokers}/5` : "relay off",
+          link.direct ? `${link.direct} direct` : null,
+          link.relay ? `${link.relay} via relay` : null,
+        ].filter(Boolean).join(" · ")}
+      </div>
       {toast && (
         <div className="fixed bottom-28 left-1/2 -translate-x-1/2 z-50 a-pop">
           <div className="text-[12px] bg-[#3a140e] text-[#ffb9ab] border border-[#7c2418] px-4 py-2">{toast}</div>

@@ -1,12 +1,11 @@
 import type { Metadata, Viewport } from "next";
 import type { ReactNode } from "react";
-import { Inter, Anton, JetBrains_Mono } from "next/font/google";
+import { Inter, JetBrains_Mono } from "next/font/google";
 import "@fontsource/anton/400.css";
 import "@fontsource/rajdhani/500.css";
 import "./globals.css";
 
 const inter = Inter({ subsets: ["latin"], variable: "--font-inter" });
-const anton = Anton({ weight: "400", subsets: ["latin"], variable: "--font-anton" });
 const jbmono = JetBrains_Mono({ subsets: ["latin"], variable: "--font-jbmono" });
 
 export const metadata: Metadata = {
@@ -25,7 +24,7 @@ const themeInit = `try{var t=localStorage.getItem('uno-theme');if(!t)t='dark';do
 
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
-    <html lang="en" data-theme="dark" className={`${inter.variable} ${anton.variable} ${jbmono.variable}`}>
+    <html lang="en" data-theme="dark" className={`${inter.variable} ${jbmono.variable}`}>
       <head>
         <script dangerouslySetInnerHTML={{ __html: themeInit }} />
       </head>
