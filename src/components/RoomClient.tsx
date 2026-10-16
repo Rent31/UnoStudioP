@@ -144,13 +144,14 @@ export default function RoomClient({ code }: { code: string }) {
   const firstView = useRef(true);
   const soundSeq = useRef(0);
   const desiredName = useRef("");
-  const sendJoinRef = useRef<(() => void) | null>(null);
+  const sendJoinRef = useRef<((force?: boolean) => void) | null>(null);
   const sendCommandRef = useRef<((command: GameCommand) => Promise<void>) | null>(null);
   const hostCommandRef = useRef<((pid: string, command: GameCommand, peerId?: string) => void) | null>(null);
   const closeRoomRef = useRef<(() => Promise<void>) | null>(null);
   const relayRef = useRef<EncryptedRelay | null>(null);
   const relayHandlers = useRef(new Map<RelayKind, (data: unknown, from: string) => void>());
   const selfPeerRef = useRef("");
+  const joinedHostRef = useRef<string | null>(null);
   const announceRef = useRef<(() => void) | null>(null);
   // how recently each peer was heard from over WebRTC rather than the relay
   const directPeers = useRef(new Map<string, number>());
@@ -506,6 +507,7 @@ export default function RoomClient({ code }: { code: string }) {
         if (!isHostRef.current) {
           if (hostPeerRef.current !== peerId) {
             hostPeerRef.current = peerId;
+            joinedHostRef.current = null;
             sendJoinRef.current?.();
           }
           setNetworkNote(viewRef.current ? "" : "Joining the room…");
@@ -522,9 +524,14 @@ export default function RoomClient({ code }: { code: string }) {
       onWire("join", joinAction, (data: JoinMessage, peerId: string) => {
         if (!bundle || !isHostRef.current) return;
         const state = bundle.state;
-        let player = data.pid && data.tok
-          ? state.players.find((p) => p.id === data.pid && p.token === data.tok)
-          : undefined;
+        // A join can arrive more than once: it goes down both transports and
+        // the client keeps asking until a welcome turns up. A peer that
+        // already holds a seat gets that seat back, never a second one.
+        const seatedId = peerPlayers.current.get(peerId);
+        let player = seatedId ? findPlayer(state, seatedId) : undefined;
+        if (!player && data.pid && data.tok) {
+          player = state.players.find((p) => p.id === data.pid && p.token === data.tok);
+        }
 
         if (player && player.left) {
           // came back after leaving or being dropped: give the seat back, or a
@@ -621,12 +628,15 @@ export default function RoomClient({ code }: { code: string }) {
         if (!isHostRef.current && peerId === hostPeerRef.current) setGone("The room was closed by the owner.");
       });
 
-      const requestJoin = () => {
+      const requestJoin = (force = false) => {
         const hostPeer = hostPeerRef.current;
         if (!hostPeer) return;
         const current = sessionRef.current;
         const requestedName = desiredName.current.trim();
         if (!current && !requestedName) return;
+        // already at the table with this host: asking again would only make
+        // extra copies of the same name
+        if (!force && current && joinedHostRef.current === hostPeer && viewRef.current?.meId === current.pid) return;
         const data: JoinMessage = {
           name: current?.name || requestedName,
           pid: current?.pid,
@@ -634,6 +644,7 @@ export default function RoomClient({ code }: { code: string }) {
         };
         setJoinBusy(true);
         sendJoin(data, hostPeer);
+        joinedHostRef.current = hostPeer;
       };
       sendJoinRef.current = requestJoin;
 
@@ -925,7 +936,7 @@ export default function RoomClient({ code }: { code: string }) {
       <Center>
         <h2 className="disp text-3xl">You left the table</h2>
         <div className="flex gap-2 mt-6">
-          <button className="btn acc" onClick={() => { sendJoinRef.current?.(); }}>Rejoin</button>
+          <button className="btn acc" onClick={() => { sendJoinRef.current?.(true); }}>Rejoin</button>
           <button className="btn ghost" onClick={() => router.push("/")}>Back</button>
         </div>
       </Center>

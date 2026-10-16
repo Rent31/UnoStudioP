@@ -217,16 +217,18 @@ ok(buildAllWildDeck().every((c) => c.light.color === "wild"), "every all wild ca
   ok(!s.unoRace, "race closed");
 }
 
-// ---------------- uno pre-arm at two cards
+// ---------------- uno cannot be banked while still holding two
 {
   const s = rig(["A", "B"], "classic");
   const a = s.players[0], b = s.players[1];
   a.hand = [mk({ color: "red", value: "9" }), mk({ color: "red", value: "4" })];
   b.hand = [mk({ color: "green", value: "3" }), mk({ color: "green", value: "5" }), mk({ color: "green", value: "7" })];
-  actUno(s, a.id);
+  ok(actUno(s, a.id) !== null, "calling while holding two is refused");
+  ok(a.calledUno === false, "and it is not banked for later");
   actPlay(s, a.id, a.hand[0].id, {});
-  ok(!s.unoRace, "pre-armed call means no race window");
-  ok(actUno(s, b.id) !== null && a.hand.length === 1, "opponent cannot punish a pre-armed player");
+  ok(!!s.unoRace && s.unoRace.playerId === a.id, "so the window opens when the card goes down");
+  ok(actUno(s, b.id) === null, "and the opponent can still catch them");
+  ok(a.hand.length === 3, "penalty applied, got " + a.hand.length);
 }
 
 // ---------------- turn timer config carries through
@@ -266,7 +268,8 @@ ok(buildAllWildDeck().every((c) => c.light.color === "wild"), "every all wild ca
   b.hand = [mk({ color: "green", value: "3" })];
   actPlay(s, a.id, a.hand[0].id, {});
   const v = buildView(s, b.id, 1, 0) as Record<string, unknown>;
-  ok(v.unoRace === null, "view never exposes an open uno race");
+  const ur = v.unoRace as { playerId: string; msLeft: number } | null;
+  ok(!!ur && ur.playerId === a.id && ur.msLeft > 0, "the open window is public: counts already are, and the catch needs it");
   const pl = (v.players as Record<string, unknown>[]).find((x) => x.id === a.id)!;
   ok(pl.calledUno === false, "a player who has not called is not flagged as safe");
   ok(!("vulnerable" in pl), "view never exposes a vulnerability flag");
@@ -682,6 +685,29 @@ ok(buildAllWildDeck().every((c) => c.light.color === "wild"), "every all wild ca
     ok(s.currentColor === "green", "stack colour: the reflected colour is the one called (got " + s.currentColor + ")");
     ok(buildView(s, s.players[2].id, 1, 0).currentColor === "green", "stack colour: the table sees it too");
   }
+}
+
+// ---------------- uno is called on the last card, not before it
+{
+  const s = rig(["A", "B", "C"], "classic");
+  const a = s.players[0];
+  a.hand = [mk({ color: "red", value: "9" }), mk({ color: "blue", value: "1" })];
+  ok(actUno(s, a.id) !== null, "uno: holding two cards is too soon to call");
+
+  ok(actPlay(s, a.id, a.hand[0].id, {}) === null, "uno: the second to last card goes down");
+  ok(a.hand.length === 1, "uno: one card left");
+  ok(!!s.unoRace && s.unoRace.playerId === a.id, "uno: dropping to one opens the window");
+
+  const seen = buildView(s, s.players[1].id, 1, 0);
+  ok(!!seen.unoRace && seen.unoRace.playerId === a.id, "uno: the table can see there is a catch to make");
+
+  ok(actUno(s, a.id) === null, "uno: and now the call is accepted");
+  ok(a.calledUno === true, "uno: the call is recorded");
+
+  // three cards is nowhere near it either
+  const s2 = rig(["A", "B"], "classic");
+  s2.players[0].hand = [mk({ color: "red", value: "1" }), mk({ color: "red", value: "2" }), mk({ color: "red", value: "3" })];
+  ok(actUno(s2, s2.players[0].id) !== null, "uno: three cards is refused too");
 }
 
 console.log(failures === 0 ? "ALL TESTS PASSED" : failures + " FAILURES");

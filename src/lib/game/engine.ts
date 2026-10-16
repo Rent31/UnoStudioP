@@ -1097,7 +1097,9 @@ export function actUno(s: RoomState, playerId: string): string | null {
     }
   }
 
-  if (p.hand.length === 2 || p.hand.length === 1) {
+  // It is only a call once the second to last card is on the pile. Shouting it
+  // while still holding two is jumping the gun, and everyone could do that.
+  if (p.hand.length === 1) {
     p.calledUno = true;
     log(s, "uno", `${p.name} calls UNO.`, { actor: p.name });
     touch(s);
@@ -1864,7 +1866,7 @@ export function buildView(s: RoomState, forPlayerId: string | null, version: num
       })),
       done: !!s.roulette.doneAt,
     } : null,
-    unoRace: null,
+    unoRace: race ? { playerId: race.playerId, msLeft: Math.max(0, race.until - now()) } : null,
     turnStage: s.turn.stage,
     drewCardId: s.turn.drewCardId ?? null,
     turnMsLeft: s.rules.turnTimer > 0 && s.phase === "playing"

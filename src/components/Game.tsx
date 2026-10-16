@@ -240,6 +240,9 @@ export default function Game({ code, view, meId, act, onLeave }: {
   })();
 
   const seatCommon = { view, isFlip, isFlex };
+  const raceOnOther = !!view.unoRace && view.unoRace.playerId !== meId;
+  const unoLive = view.phase === "playing" && !me?.spectator &&
+    ((me?.cardCount === 1 && !me?.calledUno) || raceOnOther);
 
   return (
     <main className="h-dvh flex flex-col overflow-hidden select-none transition-[padding] duration-200"
@@ -540,7 +543,9 @@ export default function Game({ code, view, meId, act, onLeave }: {
 
         {view.phase === "playing" && (
           <button
-            className={`unobtn absolute right-3 md:right-6 z-30 transition-all duration-150 ${sel ? "top-1.5 translate-y-0" : "top-0 -translate-y-1/2"}`}
+            className={`unobtn absolute right-3 md:right-6 z-30 transition-all duration-150 ${sel ? "top-1.5 translate-y-0" : "top-0 -translate-y-1/2"} ${unoLive ? "" : "off"}`}
+            disabled={!unoLive}
+            title={unoLive ? (raceOnOther ? "Catch them before they call it" : "Call UNO") : "UNO is called once you are down to your last card"}
             onClick={() => { playSound("uno"); act("uno"); }}
           >
             UNO
