@@ -116,7 +116,10 @@ export interface RoomState {
 
 const BOT_NAMES = ["Ada", "Turing", "Hopper", "Linus", "Margo", "Rex", "Nova", "Ivy", "Otto", "Zed", "Pia", "Kit"];
 export const MAX_PLAYERS = 10;
-const UNO_WINDOW_MS = 4000;
+// The catch window is not a countdown: it stays open until the next card hits
+// the pile. This number is only a ceiling, so a table where nobody ever plays
+// again cannot leave someone exposed for the rest of the round.
+const UNO_WINDOW_MS = 60000;
 export const BOT_DELAY_MS = 950;
 // how long the table gets to look at the card that ended the pull before the
 // turn moves on by itself
@@ -396,6 +399,18 @@ function clearUnoRaceFor(s: RoomState, p: PlayerState) {
   if (s.unoRace && s.unoRace.playerId === p.id) s.unoRace = null;
 }
 
+/** Anyone who lands on their last card without calling it is fair game, no
+ *  matter how they got there: a play, a swap, a rotation, a hand dump. The
+ *  window closes again as soon as their hand changes. */
+function openUnoRace(s: RoomState, p: PlayerState) {
+  if (s.unoRace && s.unoRace.playerId === p.id) {
+    if (p.hand.length === 1 && !p.calledUno && s.phase === "playing" && !p.left && !p.eliminated) return;
+    s.unoRace = null;
+  }
+  if (s.phase !== "playing" || p.left || p.eliminated || p.spectator) return;
+  if (p.hand.length === 1 && !p.calledUno) s.unoRace = { playerId: p.id, until: now() + UNO_WINDOW_MS };
+}
+
 // ---------------------------------------------------------------- rounds
 
 export function startRound(s: RoomState) {
@@ -509,12 +524,7 @@ function afterHandChange(s: RoomState, p: PlayerState) {
     clearUnoRaceFor(s, p);
     if (p.hand.length > 1) p.calledUno = false;
   }
-  if (p.hand.length === 1 && !p.calledUno && !p.isBot) {
-    s.unoRace = { playerId: p.id, until: now() + UNO_WINDOW_MS };
-  }
-  if (p.hand.length === 1 && !p.calledUno && p.isBot) {
-    s.unoRace = { playerId: p.id, until: now() + UNO_WINDOW_MS };
-  }
+  openUnoRace(s, p);
   if (p.hand.length === 0 && s.phase === "playing" && !p.eliminated && !p.left) {
     if (s.pendingDraw > 0) {
       const victim = s.players[nextIdx(s, s.turn.playerIdx, 1)];
@@ -546,6 +556,7 @@ function rotateHands(s: RoomState) {
   }
   for (const q of seated) if (q.hand.length !== 1) q.calledUno = false;
   s.unoRace = null;
+  for (const q of seated) openUnoRace(s, q);
 }
 
 function maybeResetTokens(s: RoomState) {
@@ -611,6 +622,8 @@ export function actPlay(s: RoomState, playerId: string, cardId: string, opts: Pl
     const reflect = s.rules.reverseReflect && (f.value === "reverse" || f.value === "wildReverse");
     p.hand = p.hand.filter((c) => c.id !== cardId);
     s.discardPile.push(card);
+    // the window runs to the next discard, and this is it
+    s.unoRace = null;
     if (reflect) {
       s.direction = (s.direction * -1) as 1 | -1;
       // a wild reverse still names a color, and that color is what the stack
@@ -642,6 +655,8 @@ export function actPlay(s: RoomState, playerId: string, cardId: string, opts: Pl
     p.hand = p.hand.filter((c) => face(s, c).color !== effColor);
   }
   s.discardPile.push(...extras, card);
+  // the window runs to the next discard, and this is it
+  s.unoRace = null;
 
   const wasFlipIcon = s.variant === "flex" && !!card.flipIcon && isNumberValue(f.value);
   const discardDraw = s.rules.discardRoulette;
@@ -749,6 +764,10 @@ export function actPlay(s: RoomState, playerId: string, cardId: string, opts: Pl
           s.discardPile.splice(s.discardPile.length - 1, 0, q.hand.splice(idx, 1)[0]);
         }
         log(s, "swap", "Hand dump: everyone else discards a card.");
+        for (const q of s.players) {
+          if (q.id === p.id || q.left || q.eliminated || s.phase !== "playing") continue;
+          afterHandChange(s, q);
+        }
       }
       afterHandChange(s, t);
       break;
@@ -1072,40 +1091,43 @@ export function actPass(s: RoomState, playerId: string): string | null {
 export function actUno(s: RoomState, playerId: string): string | null {
   const p = findPlayer(s, playerId);
   if (!p || p.left || p.eliminated) return "Not in game";
-  const race = s.unoRace;
+  const race = s.unoRace && now() <= s.unoRace.until ? s.unoRace : null;
 
-  if (race && now() <= race.until) {
+  // Somebody is sitting on one card and has not called it. Pressing the button
+  // while that is open is a catch, not a call.
+  if (race) {
     const target = findPlayer(s, race.playerId);
-    if (target && target.id !== p.id) {
-      s.unoRace = null;
-      if (target.hand.length === 1 && !target.calledUno) {
-        drawToHand(s, target, 2);
-        target.calledUno = false;
-        log(s, "catch", `${p.name} beat ${target.name} to the button. ${target.name} draws 2.`);
-        checkLastStanding(s);
-        touch(s);
-        return null;
-      }
-      return "They were already safe";
-    }
     if (target && target.id === p.id) {
       p.calledUno = true;
       s.unoRace = null;
-      log(s, "uno", `${p.name} calls UNO in time.`, { actor: p.name });
+      log(s, "uno", `${p.name} calls UNO.`, { actor: p.name });
       touch(s);
       return null;
     }
+    if (target && target.hand.length === 1 && !target.calledUno) {
+      s.unoRace = null;
+      drawToHand(s, target, 2);
+      target.calledUno = false;
+      log(s, "catch", `${p.name} beat ${target.name} to the button. ${target.name} draws 2.`);
+      checkLastStanding(s);
+      touch(s);
+      return null;
+    }
+    s.unoRace = null;
+    touch(s);
+    return null;
   }
 
   // It is only a call once the second to last card is on the pile. Shouting it
-  // while still holding two is jumping the gun, and everyone could do that.
-  if (p.hand.length === 1) {
+  // while still holding two means nothing - the button still answers, it just
+  // has nothing to record.
+  if (p.hand.length === 1 && !p.calledUno) {
     p.calledUno = true;
     log(s, "uno", `${p.name} calls UNO.`, { actor: p.name });
     touch(s);
     return null;
   }
-  return "Nothing to call";
+  return null;
 }
 
 // ---------------------------------------------------------------- challenge / color
@@ -1237,12 +1259,7 @@ function finishRoulette(s: RoomState) {
   const puller = findPlayer(s, r.pullerId);
   const alive = puller && !puller.left && !puller.eliminated;
 
-  if (alive) {
-    if (puller.hand.length !== 1) clearUnoRaceFor(s, puller);
-    if (puller.hand.length === 1 && !puller.calledUno) {
-      s.unoRace = { playerId: puller.id, until: now() + UNO_WINDOW_MS };
-    }
-  }
+  if (alive) openUnoRace(s, puller);
   if (s.phase !== "playing") { touch(s); return; }
 
   // The advance was counted from whoever played the card, so hand the turn back

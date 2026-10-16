@@ -349,11 +349,6 @@
 }
 .unobtn:hover { transform: scale(1.07); }
 .unobtn:active { transform: scale(.94); }
-.unobtn.off {
-  background: var(--surf2); color: var(--mut); border-color: var(--line2);
-  animation: none; cursor: not-allowed;
-}
-.unobtn.off:hover { transform: none; }
 
 .timerbar { height: 2px; background: var(--acc); transform-origin: left center; }
 

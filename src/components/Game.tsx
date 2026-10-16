@@ -219,6 +219,10 @@ export default function Game({ code, view, meId, act, onLeave }: {
   const forcedSwap = selEff === "7" && view.variant === "nomercy" && liveOpponents.length > 0;
   const selOptionalTarget = selEff === "skip" || (selEff === "7" && !forcedSwap);
 
+  // the button is always live, so the table has to be told when there is
+  // something to press it for
+  const raceOnOther = !!view.unoRace && view.unoRace.playerId !== meId;
+
   const status = (() => {
     if (view.phase !== "playing") return "";
     if (view.challenge) return challengeMine ? `${view.challenge.byName} hit you with a Draw 4` : "A Draw 4 is being challenged";
@@ -229,6 +233,10 @@ export default function Game({ code, view, meId, act, onLeave }: {
       return roulette.pullerId === meId ? `Tap the deck until ${rouletteColor}` : `${roulette.pullerName} pulls until ${rouletteColor}`;
     }
     if (me?.spectator) return "You are watching this game";
+    if (raceOnOther) {
+      const mark = view.players.find((p) => p.id === view.unoRace!.playerId);
+      return `${mark ? mark.name : "Someone"} is on one card - press UNO to catch them`;
+    }
     if (myTurn) {
       if (view.pendingDraw > 0) return `Stack it or take ${view.pendingDraw}`;
       if (view.turnStage === "drewCard") return "Play it or pass";
@@ -240,9 +248,6 @@ export default function Game({ code, view, meId, act, onLeave }: {
   })();
 
   const seatCommon = { view, isFlip, isFlex };
-  const raceOnOther = !!view.unoRace && view.unoRace.playerId !== meId;
-  const unoLive = view.phase === "playing" && !me?.spectator &&
-    ((me?.cardCount === 1 && !me?.calledUno) || raceOnOther);
 
   return (
     <main className="h-dvh flex flex-col overflow-hidden select-none transition-[padding] duration-200"
@@ -543,9 +548,8 @@ export default function Game({ code, view, meId, act, onLeave }: {
 
         {view.phase === "playing" && (
           <button
-            className={`unobtn absolute right-3 md:right-6 z-30 transition-all duration-150 ${sel ? "top-1.5 translate-y-0" : "top-0 -translate-y-1/2"} ${unoLive ? "" : "off"}`}
-            disabled={!unoLive}
-            title={unoLive ? (raceOnOther ? "Catch them before they call it" : "Call UNO") : "UNO is called once you are down to your last card"}
+            className={`unobtn absolute right-3 md:right-6 z-30 transition-all duration-150 ${sel ? "top-1.5 translate-y-0" : "top-0 -translate-y-1/2"}`}
+            title={raceOnOther ? "Catch them before they call it" : "Call UNO once you are down to your last card"}
             onClick={() => { playSound("uno"); act("uno"); }}
           >
             UNO

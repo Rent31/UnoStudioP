@@ -223,7 +223,7 @@ ok(buildAllWildDeck().every((c) => c.light.color === "wild"), "every all wild ca
   const a = s.players[0], b = s.players[1];
   a.hand = [mk({ color: "red", value: "9" }), mk({ color: "red", value: "4" })];
   b.hand = [mk({ color: "green", value: "3" }), mk({ color: "green", value: "5" }), mk({ color: "green", value: "7" })];
-  ok(actUno(s, a.id) !== null, "calling while holding two is refused");
+  ok(actUno(s, a.id) === null, "the button answers while still holding two, it just does nothing");
   ok(a.calledUno === false, "and it is not banked for later");
   actPlay(s, a.id, a.hand[0].id, {});
   ok(!!s.unoRace && s.unoRace.playerId === a.id, "so the window opens when the card goes down");
@@ -692,7 +692,8 @@ ok(buildAllWildDeck().every((c) => c.light.color === "wild"), "every all wild ca
   const s = rig(["A", "B", "C"], "classic");
   const a = s.players[0];
   a.hand = [mk({ color: "red", value: "9" }), mk({ color: "blue", value: "1" })];
-  ok(actUno(s, a.id) !== null, "uno: holding two cards is too soon to call");
+  ok(actUno(s, a.id) === null, "uno: the button answers with two cards in hand");
+  ok(a.calledUno === false, "uno: but there is nothing to record yet");
 
   ok(actPlay(s, a.id, a.hand[0].id, {}) === null, "uno: the second to last card goes down");
   ok(a.hand.length === 1, "uno: one card left");
@@ -707,7 +708,50 @@ ok(buildAllWildDeck().every((c) => c.light.color === "wild"), "every all wild ca
   // three cards is nowhere near it either
   const s2 = rig(["A", "B"], "classic");
   s2.players[0].hand = [mk({ color: "red", value: "1" }), mk({ color: "red", value: "2" }), mk({ color: "red", value: "3" })];
-  ok(actUno(s2, s2.players[0].id) !== null, "uno: three cards is refused too");
+  ok(actUno(s2, s2.players[0].id) === null, "uno: three cards is just as silent");
+  ok(s2.players[0].calledUno === false, "uno: nothing gets recorded for it");
+  ok(!s2.unoRace, "uno: and no window opens");
+}
+
+// ---------------- the catch window runs until the next card hits the pile
+{
+  const s = rig(["A", "B", "C"], "classic");
+  const a = s.players[0], b = s.players[1], c = s.players[2];
+  a.hand = [mk({ color: "red", value: "9" }), mk({ color: "red", value: "4" })];
+  b.hand = [mk({ color: "red", value: "1" }), mk({ color: "red", value: "2" }), mk({ color: "green", value: "3" })];
+  c.hand = [mk({ color: "red", value: "5" }), mk({ color: "blue", value: "6" }), mk({ color: "blue", value: "7" })];
+  actPlay(s, a.id, a.hand[0].id, {});
+  ok(!!s.unoRace && s.unoRace.playerId === a.id, "uno: A is exposed on one card");
+  actPlay(s, b.id, b.hand[0].id, {});
+  ok(!s.unoRace, "uno: the next card on the pile closes the window");
+  ok(actUno(s, c.id) === null, "uno: so a late press is still answered");
+  ok(a.hand.length === 1 && a.calledUno === false, "uno: but nobody is caught, A has " + a.hand.length);
+}
+
+// ---------------- a swap onto one card is exposed as well
+{
+  const s = rig(["A", "B"], "nomercy");
+  const a = s.players[0], b = s.players[1];
+  a.hand = [mk({ color: "red", value: "7" }), mk({ color: "red", value: "1" })];
+  b.hand = [mk({ color: "green", value: "5" }), mk({ color: "green", value: "6" }), mk({ color: "green", value: "8" })];
+  ok(actPlay(s, a.id, a.hand[0].id, {}) === null, "swap onto one: the forced swap goes through");
+  ok(b.hand.length === 1, "swap onto one: B is left on a single card, got " + b.hand.length);
+  ok(!!s.unoRace && s.unoRace.playerId === b.id, "swap onto one: so B can be caught");
+  ok(actUno(s, a.id) === null, "swap onto one: and the catch is accepted");
+  ok(b.hand.length === 3, "swap onto one: B takes the two cards, got " + b.hand.length);
+}
+
+// ---------------- so is a rotation onto one card
+{
+  const s = rig(["A", "B", "C"], "nomercy");
+  const a = s.players[0], b = s.players[1], c = s.players[2];
+  a.hand = [mk({ color: "red", value: "0" }), mk({ color: "red", value: "1" }), mk({ color: "red", value: "2" })];
+  b.hand = [mk({ color: "green", value: "5" })];
+  c.hand = [mk({ color: "green", value: "6" }), mk({ color: "green", value: "7" }), mk({ color: "green", value: "8" })];
+  actPlay(s, a.id, a.hand[0].id, {});
+  ok(c.hand.length === 1, "rotate onto one: C picks up the single hand, got " + c.hand.length);
+  ok(!!s.unoRace && s.unoRace.playerId === c.id, "rotate onto one: and the window is open on them");
+  ok(actUno(s, a.id) === null && c.hand.length === 3, "rotate onto one: the catch lands, got " + c.hand.length);
 }
 
 console.log(failures === 0 ? "ALL TESTS PASSED" : failures + " FAILURES");
