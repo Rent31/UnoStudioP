@@ -442,7 +442,7 @@ export default function Game({ code, view, meId, act, onLeave }: {
 
       {/* selection tray */}
       {sel && selFace && (
-        <div className="shrink-0 border-t border-[var(--line)] bg-[var(--surf)] px-3 py-2.5 a-fade">
+        <div className="shrink-0 relative z-40 border-t border-[var(--line)] bg-[var(--surf)] px-3 py-2.5 a-fade">
           <div className="max-w-3xl mx-auto flex items-center gap-3 flex-wrap">
             <span className="cardwrap [--k:.2]">
               <CardView face={selFace} flipDark={isFlip && view.side === "dark"} flipLight={isFlip && view.side === "light"}
@@ -477,7 +477,7 @@ export default function Game({ code, view, meId, act, onLeave }: {
                 </button>
               )}
             </div>
-            <div className="flex gap-2">
+            <div className="flex gap-2 ml-auto shrink-0">
               <button className="btn sm acc" onClick={confirmPlay}>Play</button>
               <button className="btn sm ghost" onClick={() => setSel(null)}><X size={13} /></button>
             </div>
@@ -540,7 +540,7 @@ export default function Game({ code, view, meId, act, onLeave }: {
 
         {view.phase === "playing" && (
           <button
-            className="unobtn absolute right-3 md:right-6 top-0 -translate-y-1/2 z-30"
+            className={`unobtn absolute right-3 md:right-6 z-30 transition-all duration-150 ${sel ? "top-1.5 translate-y-0" : "top-0 -translate-y-1/2"}`}
             onClick={() => { playSound("uno"); act("uno"); }}
           >
             UNO

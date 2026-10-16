@@ -6,7 +6,7 @@ import {
 } from "../src/lib/game/engine";
 import { GameCard, Face, Variant, buildAllWildDeck, buildFlipDeck, buildFlexDeck } from "../src/lib/game/model";
 import { dispatchGameCommand } from "../src/lib/game/dispatch";
-import { setHost } from "../src/lib/game/engine";
+import { setHost, playableMoves } from "../src/lib/game/engine";
 import { pickHost, hostShouldChange, isBetterHost, isNewerState, PRESENCE_TTL_MS, type HostCandidate } from "../src/lib/host";
 
 let failures = 0;
@@ -630,6 +630,58 @@ ok(buildAllWildDeck().every((c) => c.light.color === "wild"), "every all wild ca
   const b3Cards = b3.hand.map((x) => x.id);
   actPlay(s3, a3.id, seven3.id, {});
   ok(b3.hand.map((x) => x.id).join() === b3Cards.join(), "no mercy 7: other variants keep their hands");
+}
+
+// ---------------- a wild played onto a stack moves the table colour
+{
+  const openStack = (rules: Record<string, unknown> = {}) => {
+    const s = rig(["A", "B", "C"], "classic", { stacking: true, ...rules });
+    s.discardPile = [mk({ color: "yellow", value: "5" })];
+    s.currentColor = "yellow";
+    const a = s.players[0];
+    const plus2 = mk({ color: "yellow", value: "draw2" });
+    a.hand = [plus2, mk({ color: "blue", value: "1" })];
+    actPlay(s, a.id, plus2.id, {});
+    return s;
+  };
+
+  {
+    const s = openStack();
+    const b = s.players[1], c = s.players[2];
+    ok(s.pendingDraw === 2, "stack colour: the +2 opens the stack");
+
+    const wd4 = mk({ color: "wild", value: "wildDraw4" });
+    b.hand = [wd4, mk({ color: "blue", value: "3" })];
+    ok(actPlay(s, b.id, wd4.id, { color: "green" }) === null, "stack colour: the wild stacks");
+    ok(s.pendingDraw === 6, "stack colour: the stack grew to " + s.pendingDraw);
+    ok(s.currentColor === "green", "stack colour: the called colour takes over");
+
+    // C takes the stack, which hands the turn back to A - who must now match
+    // the colour the wild was called as, not the colour the stack started on
+    ok(actDraw(s, c.id) === null, "stack colour: the stack is taken");
+    ok(s.pendingDraw === 0, "stack colour: the stack is spent");
+    ok(s.players[s.turn.playerIdx].id === s.players[0].id, "stack colour: play comes back round");
+    const v = buildView(s, s.players[0].id, 1, 0);
+    ok(v.currentColor === "green", "stack colour: the view says green");
+    const green = mk({ color: "green", value: "5" });
+    const yellow = mk({ color: "yellow", value: "5" });
+    s.players[0].hand = [green, yellow];
+    const moves = playableMoves(s, s.players[0]);
+    ok(moves.some((m) => m.card.id === green.id), "stack colour: green is playable");
+    ok(!moves.some((m) => m.card.id === yellow.id), "stack colour: yellow is not");
+    ok(actPlay(s, s.players[0].id, green.id, {}) === null, "stack colour: green is accepted");
+  }
+
+  // reflecting with a wild reverse names a colour too - that is the point of it
+  {
+    const s = openStack({ reverseReflect: true });
+    const b = s.players[1];
+    const wr = mk({ color: "wild", value: "wildReverse" });
+    b.hand = [wr, mk({ color: "blue", value: "3" })];
+    ok(actPlay(s, b.id, wr.id, { color: "green" }) === null, "stack colour: a wild reverse reflects");
+    ok(s.currentColor === "green", "stack colour: the reflected colour is the one called (got " + s.currentColor + ")");
+    ok(buildView(s, s.players[2].id, 1, 0).currentColor === "green", "stack colour: the table sees it too");
+  }
 }
 
 console.log(failures === 0 ? "ALL TESTS PASSED" : failures + " FAILURES");

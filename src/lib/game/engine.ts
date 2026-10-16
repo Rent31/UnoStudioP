@@ -613,7 +613,10 @@ export function actPlay(s: RoomState, playerId: string, cardId: string, opts: Pl
     s.discardPile.push(card);
     if (reflect) {
       s.direction = (s.direction * -1) as 1 | -1;
-      if (!isWildFace(f)) s.currentColor = f.color;
+      // a wild reverse still names a color, and that color is what the stack
+      // comes back as - leaving the old one would hold everyone to it
+      if (chosen) s.currentColor = chosen;
+      else if (!isWildFace(f)) s.currentColor = f.color;
       log(s, "reverse", `${p.name} reflected the +${s.pendingDraw} back.`, { card: f, actor: p.name });
     } else {
       const val = drawStrength(f.value);
