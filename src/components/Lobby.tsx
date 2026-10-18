@@ -114,7 +114,7 @@ export default function Lobby({ code, view, meId, act, onLeave }: {
         </div>
       </header>
 
-      <div className="flex border-b border-[var(--line)]">
+      <div className="flex border-b border-[var(--line)] md:justify-center">
         {(["game", "players"] as const).map((t) => (
           <button
             key={t}
