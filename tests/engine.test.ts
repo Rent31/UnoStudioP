@@ -193,16 +193,18 @@ ok(buildAllWildDeck().every((c) => c.light.color === "wild"), "every all wild ca
   ok(b.hand.length === 1 && c.hand.length === 1, "hands were passed along");
 }
 
-// ---------------- uno race: self call wins
+// ---------------- calling it on the way down is what protects you
 {
   const s = rig(["A", "B"], "classic");
   const a = s.players[0], b = s.players[1];
   a.hand = [mk({ color: "red", value: "9" }), mk({ color: "red", value: "4" })];
   b.hand = [mk({ color: "green", value: "3" })];
+  ok(actUno(s, a.id) === null, "uno: the button answers while A still holds two");
+  ok(a.calledUno === true, "uno: and their own turn with two left is the call");
   actPlay(s, a.id, a.hand[0].id, {});
-  ok(!!s.unoRace && s.unoRace.playerId === a.id, "uno race opened on A");
-  ok(actUno(s, a.id) === null && a.calledUno && !s.unoRace, "A pressed first and is protected");
-  ok(a.hand.length === 1, "no penalty for the fast caller");
+  ok(a.hand.length === 1 && !s.unoRace, "uno: no window opens on a player who called");
+  ok(actUno(s, b.id) === null, "uno: B's press is answered too");
+  ok(a.hand.length === 1 && a.calledUno, "uno: but there is nobody left to catch, A has " + a.hand.length);
 }
 
 // ---------------- uno race: opponent wins the race
@@ -217,18 +219,20 @@ ok(buildAllWildDeck().every((c) => c.light.color === "wild"), "every all wild ca
   ok(!s.unoRace, "race closed");
 }
 
-// ---------------- uno cannot be banked while still holding two
+// ---------------- the call belongs to whoever is on two cards and on turn
 {
   const s = rig(["A", "B"], "classic");
   const a = s.players[0], b = s.players[1];
   a.hand = [mk({ color: "red", value: "9" }), mk({ color: "red", value: "4" })];
   b.hand = [mk({ color: "green", value: "3" }), mk({ color: "green", value: "5" }), mk({ color: "green", value: "7" })];
-  ok(actUno(s, a.id) === null, "the button answers while still holding two, it just does nothing");
-  ok(a.calledUno === false, "and it is not banked for later");
+  ok(actUno(s, b.id) === null, "uno: B presses out of turn");
+  ok(b.calledUno === false, "uno: nothing is recorded, it is not their call to make");
+  ok(actUno(s, a.id) === null, "uno: A presses while holding two");
+  ok(a.calledUno === true, "uno: two cards on your own turn is the moment");
   actPlay(s, a.id, a.hand[0].id, {});
-  ok(!!s.unoRace && s.unoRace.playerId === a.id, "so the window opens when the card goes down");
-  ok(actUno(s, b.id) === null, "and the opponent can still catch them");
-  ok(a.hand.length === 3, "penalty applied, got " + a.hand.length);
+  ok(!s.unoRace, "uno: so the window never opens on them");
+  ok(actUno(s, b.id) === null, "uno: and B's late press is answered");
+  ok(a.hand.length === 1, "uno: with nothing behind it, A has " + a.hand.length);
 }
 
 // ---------------- turn timer config carries through
@@ -275,9 +279,12 @@ ok(buildAllWildDeck().every((c) => c.light.color === "wild"), "every all wild ca
   ok(!("vulnerable" in pl), "view never exposes a vulnerability flag");
   ok(!(v.events as {type:string}[]).some((e) => e.type === "uno"), "uno calls stay out of the log");
 
-  actUno(s, a.id);
-  const v2 = buildView(s, b.id, 1, 0) as Record<string, unknown>;
-  const pl2 = (v2.players as Record<string, unknown>[]).find((x) => x.id === a.id)!;
+  // and the call itself goes in the log, on the way down rather than after
+  const s2 = rig(["A", "B"], "classic");
+  s2.players[0].hand = [mk({ color: "red", value: "9" }), mk({ color: "red", value: "4" })];
+  actUno(s2, s2.players[0].id);
+  const v2 = buildView(s2, s2.players[1].id, 1, 0) as Record<string, unknown>;
+  const pl2 = (v2.players as Record<string, unknown>[]).find((x) => x.id === s2.players[0].id)!;
   ok(pl2.calledUno === true, "a successful uno call is visible to every player");
   ok(!pl2.hand, "the caller's hand is still hidden");
   const call = (v2.events as {type:string; actor?:string}[]).find((e) => e.type === "uno");
@@ -687,30 +694,65 @@ ok(buildAllWildDeck().every((c) => c.light.color === "wild"), "every all wild ca
   }
 }
 
-// ---------------- uno is called on the last card, not before it
+// ---------------- uno is called on the way down to the last card
 {
   const s = rig(["A", "B", "C"], "classic");
   const a = s.players[0];
   a.hand = [mk({ color: "red", value: "9" }), mk({ color: "blue", value: "1" })];
-  ok(actUno(s, a.id) === null, "uno: the button answers with two cards in hand");
-  ok(a.calledUno === false, "uno: but there is nothing to record yet");
+  ok(actUno(s, a.id) === null, "uno: the button answers while A holds two");
+  ok(a.calledUno === true, "uno: their turn, two cards, about to play one - that is the call");
 
   ok(actPlay(s, a.id, a.hand[0].id, {}) === null, "uno: the second to last card goes down");
   ok(a.hand.length === 1, "uno: one card left");
-  ok(!!s.unoRace && s.unoRace.playerId === a.id, "uno: dropping to one opens the window");
+  ok(!s.unoRace, "uno: and the caller is safe, no window opens");
 
-  const seen = buildView(s, s.players[1].id, 1, 0);
-  ok(!!seen.unoRace && seen.unoRace.playerId === a.id, "uno: the table can see there is a catch to make");
-
-  ok(actUno(s, a.id) === null, "uno: and now the call is accepted");
-  ok(a.calledUno === true, "uno: the call is recorded");
+  // one card is too late - the chance went down with the card
+  const s2 = rig(["A", "B"], "classic");
+  const a2 = s2.players[0];
+  a2.hand = [mk({ color: "red", value: "9" }), mk({ color: "blue", value: "1" })];
+  actPlay(s2, a2.id, a2.hand[0].id, {});
+  ok(!!s2.unoRace && s2.unoRace.playerId === a2.id, "uno: dropping to one without calling opens the window");
+  const seen = buildView(s2, s2.players[1].id, 1, 0);
+  ok(!!seen.unoRace && seen.unoRace.playerId === a2.id, "uno: the table can see there is a catch to make");
+  ok(actUno(s2, a2.id) === null, "uno: a late press is answered");
+  ok(a2.calledUno === false, "uno: but the call itself is refused now");
+  ok(!!s2.unoRace, "uno: and the window stays open for the table");
 
   // three cards is nowhere near it either
-  const s2 = rig(["A", "B"], "classic");
-  s2.players[0].hand = [mk({ color: "red", value: "1" }), mk({ color: "red", value: "2" }), mk({ color: "red", value: "3" })];
-  ok(actUno(s2, s2.players[0].id) === null, "uno: three cards is just as silent");
-  ok(s2.players[0].calledUno === false, "uno: nothing gets recorded for it");
-  ok(!s2.unoRace, "uno: and no window opens");
+  const s3 = rig(["A", "B"], "classic");
+  s3.players[0].hand = [mk({ color: "red", value: "1" }), mk({ color: "red", value: "2" }), mk({ color: "red", value: "3" })];
+  ok(actUno(s3, s3.players[0].id) === null, "uno: three cards is just as silent");
+  ok(s3.players[0].calledUno === false, "uno: nothing gets recorded for it");
+  ok(!s3.unoRace, "uno: and no window opens");
+}
+
+// ---------------- a draw does not lock the rest of the hand
+{
+  const s = rig(["A", "B"], "classic");
+  const a = s.players[0];
+  const keeper = mk({ color: "red", value: "1" });
+  a.hand = [keeper, mk({ color: "blue", value: "7" })];
+  s.drawPile = [mk({ color: "green", value: "9" })];
+  ok(actDraw(s, a.id) === null, "draw: tapping the deck is accepted");
+  ok(a.hand.length === 3, "draw: one card comes off the pile, got " + a.hand.length);
+  ok(s.turn.stage === "drewCard", "draw: the turn waits on a play or a pass");
+  ok(actPlay(s, a.id, keeper.id, {}) === null, "draw: and the card that was already in hand plays again");
+  ok(!a.hand.some((c) => c.id === keeper.id), "draw: it left the hand");
+}
+
+// ---------------- one card per draw unless the table asked for the mercy rule
+{
+  const s = rig(["A", "B"], "nomercy");
+  s.players[0].hand = [mk({ color: "blue", value: "7" })];
+  s.drawPile = [mk({ color: "green", value: "3" })];
+  actDraw(s, s.players[0].id);
+  ok(s.players[0].hand.length === 2, "draw: a tap takes one card even in no mercy, got " + s.players[0].hand.length);
+
+  const s2 = rig(["A", "B"], "nomercy", { drawUntilPlay: true });
+  s2.players[0].hand = [mk({ color: "blue", value: "7" })];
+  s2.drawPile = [mk({ color: "red", value: "8" }), mk({ color: "green", value: "4" }), mk({ color: "green", value: "3" })];
+  actDraw(s2, s2.players[0].id);
+  ok(s2.players[0].hand.length === 4, "draw: with the rule on it keeps going until one fits, got " + s2.players[0].hand.length);
 }
 
 // ---------------- the catch window runs until the next card hits the pile

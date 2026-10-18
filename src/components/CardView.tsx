@@ -125,7 +125,7 @@ const peopleI = (
   </g>
 );
 
-function wheelI(colors: string[], n = 8, small: boolean) {
+function wheelI(colors: string[], n = 8) {
   const st = 360 / n;
   const pt = (a: number) => {
     const r = ((a - 90) * Math.PI) / 180;
@@ -141,7 +141,7 @@ function wheelI(colors: string[], n = 8, small: boolean) {
   }
   parts.push(<circle key="r" cx="32" cy="32" r="23" fill="none" stroke="#fff" strokeWidth="3" />);
   parts.push(<circle key="c" cx="32" cy="32" r="6" fill="#17181e" stroke="#fff" strokeWidth="2.5" />);
-  if (!small) parts.push(<polygon key="p" points="32,2 26,10 38,10" fill="#fff" />);
+  parts.push(<polygon key="p" points="32,2 26,10 38,10" fill="#fff" />);
   return <>{parts}</>;
 }
 
@@ -218,7 +218,7 @@ function wildBits(v: FaceValue, dark: boolean): FaceBits {
     case "wildReverse": return { corner: svg(revI, 19), center: svg(revI, 48) };
     case "wildSkip": return { corner: svg(skipI, 18), center: svg(skipI, 50) };
     case "wildSkipTwo":
-      return { corner: cw(svg(skipI, 18), "x2"), center: <>{svg(skipI, 48)}<div className="sm">x2</div></> };
+      return { corner: cw(svg(skipI, 18), "×2"), center: <>{svg(skipI, 48)}<div className="sm">×2</div></> };
     case "wildTargetDraw2":
       return { corner: cw(svg(crossI, 17), "+2"), center: <>{svg(crossI, 46)}<div className="dn">+2</div></> };
     case "wildSwap": return { corner: svg(swapI, 18), center: svg(swapI, 52) };
@@ -227,13 +227,13 @@ function wildBits(v: FaceValue, dark: boolean): FaceBits {
     case "wildDraw6": return { corner: "+6", center: fanN(6, dark) };
     case "wildDraw10": return { corner: "+10", center: fanN(10, dark) };
     case "wildReverseDraw4":
-      return { corner: cw(svg(revI, 16), "+4"), center: <>{svg(revI, 40)}<div className="dn">+4</div></> };
+      return { corner: "+4⇄", center: <>{svg(revI, 40)}<div className="dn">+4</div></> };
     case "wildColorRoulette":
-      return { corner: svg(wheelM, 22), center: svg(wheelI(LCOL, 8, false), 64) };
+      return { corner: svg(wheelM, 22), center: svg(wheelI(LCOL, 8), 64) };
     case "wildDrawColor":
       return {
         corner: svg(wheelM, 22),
-        center: <>{svg(wheelI(DCOL, 8, true), 56)}<div className="sm">DRAW COLOR</div></>,
+        center: <>{svg(wheelI(DCOL, 8), 56)}<div className="sm">DRAW COLOR</div></>,
       };
     case "wildAllFlip":
       // source shares FFM for the corner index and FFC for the face
@@ -269,14 +269,16 @@ export function CardView({ face, flipDark, flipLight, flex, useFlexArt }: CardVi
     const wb = wildBits(face.value, !!flipDark);
     corner = wb.corner;
     center = wb.center;
-    if (face.value === "wild") classes.push("plain");
     if (flipDark) classes.push("dk");
-    if (flex?.flexValue && useFlexArt) classes.push("fa");
-    // targeted / group draw corners for flex wilds
-    if (flex?.flexValue === "targetDraw2") corner = cw(svg(crossI, 16), "+2");
-    if (flex?.flexValue === "allDraw2") corner = cw(svg(peopleI, 17), "+2");
-    if (flex?.flexValue === "targetDraw4") corner = cw(svg(crossI, 16), "+4");
-    if (flex?.flexValue === "allDraw1") corner = cw(svg(peopleI, 17), "+1");
+    const fxv = useFlexArt ? flex?.flexValue ?? null : null;
+    if (fxv) classes.push("fa");
+    // A flexed wild carries its action in the corner and the four colour blob
+    // in the middle. Wild Draw Four keeps its fan: that card is a draw card
+    // first and a targeted draw second.
+    if (fxv === "targetDraw2") { corner = cw(svg(crossI, 16), "+2"); center = WB; }
+    else if (fxv === "allDraw2") { corner = cw(svg(peopleI, 17), "+2"); center = WB; }
+    else if (fxv === "targetDraw4") corner = cw(svg(crossI, 16), "+4");
+    if (!center) classes.push("plain");
   } else {
     const hex = flipDark ? DARK_COLORS[face.color] : LIGHT_COLORS[face.color];
     (style as Record<string, string>)["--c"] = hex;

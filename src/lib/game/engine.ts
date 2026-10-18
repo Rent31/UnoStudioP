@@ -597,7 +597,15 @@ export function actPlay(s: RoomState, playerId: string, cardId: string, opts: Pl
     }
   }
 
-  if (s.turn.stage === "drewCard" && s.turn.drewCardId !== cardId) return "Play the drawn card or pass";
+  if (s.turn.stage === "drewCard") {
+    // Drawing opens the hand back up: anything that matches the pile is legal
+    // again, including the card that was sitting there before the draw. With
+    // forced play on, the card that came off the pile still has to go down.
+    const drew = s.turn.drewCardId ? p.hand.find((c) => c.id === s.turn.drewCardId) : undefined;
+    if (s.rules.forcedPlay && drew && drew.id !== cardId && canPlayCard(s, p, drew, false)) {
+      return "Forced play: play the card you drew";
+    }
+  }
   if (s.turn.stage === "double") {
     const okColor = !isWildFace(f) && f.color === s.turn.doubleColor;
     const okValue = f.value === s.turn.doubleValue;
@@ -1036,7 +1044,9 @@ export function actDraw(s: RoomState, playerId: string): string | null {
     return null;
   }
 
-  const untilPlayable = s.variant === "nomercy" || s.rules.drawUntilPlay;
+  // One card per tap. The old build forced the mercy draw on every No Mercy
+  // table no matter what the rules said, which turned one tap into half a hand.
+  const untilPlayable = s.rules.drawUntilPlay;
   if (untilPlayable) {
     let lastDrawn: GameCard | null = null;
     let count = 0;
@@ -1094,16 +1104,10 @@ export function actUno(s: RoomState, playerId: string): string | null {
   const race = s.unoRace && now() <= s.unoRace.until ? s.unoRace : null;
 
   // Somebody is sitting on one card and has not called it. Pressing the button
-  // while that is open is a catch, not a call.
-  if (race) {
+  // while that is open is a catch, not a call - and there is no calling your
+  // way out of it, that chance went with the card you just put down.
+  if (race && race.playerId !== p.id) {
     const target = findPlayer(s, race.playerId);
-    if (target && target.id === p.id) {
-      p.calledUno = true;
-      s.unoRace = null;
-      log(s, "uno", `${p.name} calls UNO.`, { actor: p.name });
-      touch(s);
-      return null;
-    }
     if (target && target.hand.length === 1 && !target.calledUno) {
       s.unoRace = null;
       drawToHand(s, target, 2);
@@ -1118,15 +1122,17 @@ export function actUno(s: RoomState, playerId: string): string | null {
     return null;
   }
 
-  // It is only a call once the second to last card is on the pile. Shouting it
-  // while still holding two means nothing - the button still answers, it just
-  // has nothing to record.
-  if (p.hand.length === 1 && !p.calledUno) {
+  // The call itself: on your own turn, while you still hold two, the moment
+  // before the second to last card goes down.
+  const myTurn = s.phase === "playing" && s.players[s.turn.playerIdx]?.id === p.id;
+  if (myTurn && p.hand.length === 2 && !p.calledUno) {
     p.calledUno = true;
     log(s, "uno", `${p.name} calls UNO.`, { actor: p.name });
     touch(s);
     return null;
   }
+  // Any other time the button answers and nothing happens: one card left is
+  // too late, three is too early, and it is not your turn.
   return null;
 }
 
@@ -1646,8 +1652,10 @@ export function botAct(s: RoomState, bot: PlayerState) {
   }
 
   if (s.turn.stage === "drewCard") {
-    const card = bot.hand.find((c) => c.id === s.turn.drewCardId);
-    if (card && canPlayCard(s, bot, card, false)) { playCardAsBot(s, bot, card, false); return; }
+    const drew = bot.hand.find((c) => c.id === s.turn.drewCardId);
+    if (s.rules.forcedPlay && drew && canPlayCard(s, bot, drew, false)) { playCardAsBot(s, bot, drew, false); return; }
+    const after = playableMoves(s, bot);
+    if (after.length > 0) { playCardAsBot(s, bot, after[0].card, after[0].flex); return; }
     actPass(s, bot.id);
     return;
   }
@@ -1708,11 +1716,6 @@ function maybeBotCatch(s: RoomState): boolean {
   if (bots.length === 0) return false;
   catchMemory.set(key, 1);
   if (catchMemory.size > 400) catchMemory.clear();
-  const target = findPlayer(s, race.playerId);
-  if (target?.isBot) {
-    // bots cover for themselves most of the time
-    if (Math.random() < 0.7) { target.calledUno = true; s.unoRace = null; log(s, "uno", `${target.name} calls UNO.`, { actor: target.name }); return true; }
-  }
   if (Math.random() < 0.55) {
     const b = bots[Math.floor(Math.random() * bots.length)];
     actUno(s, b.id);
@@ -1825,12 +1828,12 @@ export function buildView(s: RoomState, forPlayerId: string | null, version: num
         const inDouble = s.turn.stage === "double";
         const cf = face(s, c);
         const doubleOk = inDouble && (cf.color === s.turn.doubleColor || cf.value === s.turn.doubleValue);
-        const normal = canAct && !inDouble && (s.turn.stage === "play" || s.turn.drewCardId === c.id) && canPlayCard(s, p, c, false);
+        const normal = canAct && !inDouble && (s.turn.stage === "play" || s.turn.stage === "drewCard") && canPlayCard(s, p, c, false);
         return {
           id: c.id, light: c.light, dark: c.dark ?? null,
           flexColor: c.flexColor ?? null, flexValue: c.flexValue ?? null, flipIcon: !!c.flipIcon,
           playable: !!(canAct && (inDouble ? doubleOk : normal)),
-          flexPlayable: !!(canAct && !inDouble && s.turn.stage === "play" && s.variant === "flex" &&
+          flexPlayable: !!(canAct && !inDouble && (s.turn.stage === "play" || s.turn.stage === "drewCard") && s.variant === "flex" &&
             p.powerGreen && !canPlayCard(s, p, c, false) && canPlayCard(s, p, c, true)),
           flexUpgradable: !!(canAct && s.variant === "flex" && p.powerGreen && c.flexValue && canPlayCard(s, p, c, false)),
         };

@@ -239,8 +239,9 @@ export default function Game({ code, view, meId, act, onLeave }: {
     }
     if (myTurn) {
       if (view.pendingDraw > 0) return `Stack it or take ${view.pendingDraw}`;
-      if (view.turnStage === "drewCard") return "Play it or pass";
+      if (view.turnStage === "drewCard") return "Play a card or pass";
       if (view.turnStage === "double") return "Play a second card or end turn";
+      if (me && me.cardCount === 2 && !me.calledUno) return "Your turn - call UNO before you play";
       return "Your turn";
     }
     const cur = view.players.find((p) => p.isTurn);
