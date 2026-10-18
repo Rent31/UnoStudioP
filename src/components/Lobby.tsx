@@ -94,9 +94,11 @@ export default function Lobby({ code, view, meId, act, onLeave }: {
 
   return (
     <main className="min-h-dvh flex flex-col transition-[padding] duration-200" style={{ paddingRight: showLog && docked ? "var(--panel-w)" : 0 }}>
-      <header className="flex items-center justify-between px-4 md:px-7 h-14 border-b border-[var(--line)]">
+      <header className="relative flex items-center justify-between px-4 md:px-7 h-14 border-b border-[var(--line)]">
         <button className="iconbtn" onClick={onLeave} title="Leave"><LogOut size={15} /></button>
-        <button onClick={copy} className="flex items-center gap-2.5 group">
+        {/* the two side groups are not the same width, so on desktop the code
+            is centred on the header itself instead of on the gap between them */}
+        <button onClick={copy} className="flex items-center gap-2.5 group md:absolute md:left-1/2 md:top-1/2 md:-translate-x-1/2 md:-translate-y-1/2">
           <span className="disp text-2xl tracking-[0.16em] leading-none pt-0.5">{code}</span>
           {copied
             ? <Check size={14} className="text-[var(--grn)]" />
