@@ -1,12 +1,10 @@
 import type { Metadata, Viewport } from "next";
 import type { ReactNode } from "react";
-import { Inter, JetBrains_Mono } from "next/font/google";
+import "@fontsource-variable/inter";
+import "@fontsource-variable/jetbrains-mono";
 import "@fontsource/anton/400.css";
 import "@fontsource/rajdhani/500.css";
 import "./globals.css";
-
-const inter = Inter({ subsets: ["latin"], variable: "--font-inter" });
-const jbmono = JetBrains_Mono({ subsets: ["latin"], variable: "--font-jbmono" });
 
 export const metadata: Metadata = {
   title: "UNOshima",
@@ -24,7 +22,7 @@ const themeInit = `try{var t=localStorage.getItem('uno-theme');if(!t)t='dark';do
 
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
-    <html lang="en" data-theme="dark" className={`${inter.variable} ${jbmono.variable}`}>
+    <html lang="en" data-theme="dark">
       <head>
         <script dangerouslySetInnerHTML={{ __html: themeInit }} />
       </head>

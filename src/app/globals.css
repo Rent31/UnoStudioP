@@ -27,6 +27,12 @@
   --k-seat: .32;
   --k-seat-side: .28;
   --panel-w: min(320px, 92vw);
+
+  /* Self hosted faces. Nothing here is fetched at build time, so a build
+     never waits on Google Fonts and never fails because of it. */
+  --font-inter: "Inter Variable", "Inter", system-ui, -apple-system, sans-serif;
+  --font-jbmono: "JetBrains Mono Variable", "JetBrains Mono", ui-monospace, monospace;
+  --font-anton: "Anton", "Arial Narrow", sans-serif;
 }
 :root[data-theme="light"] {
   --bg: #f4f4f1;
