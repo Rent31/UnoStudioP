@@ -4,7 +4,7 @@ import {
   actRouletteColor, actRoulettePull, actRouletteFinish, ROULETTE_HOLD_MS,
   actSetSpectate, actStart,
 } from "../src/lib/game/engine";
-import { GameCard, Face, Variant, buildAllWildDeck, buildFlipDeck, buildFlexDeck } from "../src/lib/game/model";
+import { GameCard, Face, Variant, ColorName, buildAllWildDeck, buildFlipDeck, buildFlexDeck } from "../src/lib/game/model";
 import { dispatchGameCommand } from "../src/lib/game/dispatch";
 import { setHost, playableMoves } from "../src/lib/game/engine";
 import { pickHost, hostShouldChange, isBetterHost, isNewerState, PRESENCE_TTL_MS, type HostCandidate } from "../src/lib/host";
@@ -724,6 +724,57 @@ ok(buildAllWildDeck().every((c) => c.light.color === "wild"), "every all wild ca
   ok(actUno(s3, s3.players[0].id) === null, "uno: three cards is just as silent");
   ok(s3.players[0].calledUno === false, "uno: nothing gets recorded for it");
   ok(!s3.unoRace, "uno: and no window opens");
+}
+
+// ---------------- a stacked draw card carries its own colour
+{
+  const s = rig(["A", "B", "C"], "classic", { stacking: true, ultimateStacking: true });
+  const a = s.players[0], b = s.players[1], c = s.players[2];
+  const yellow2 = mk({ color: "yellow", value: "draw2" });
+  const green2 = mk({ color: "green", value: "draw2" });
+  s.discardPile = [mk({ color: "yellow", value: "5" })];
+  s.currentColor = "yellow";
+  const colour = (): ColorName => s.currentColor;
+  a.hand = [yellow2, mk({ color: "blue", value: "1" })];
+  b.hand = [green2, mk({ color: "blue", value: "2" })];
+  c.hand = [mk({ color: "blue", value: "3" }), mk({ color: "blue", value: "4" })];
+  ok(actPlay(s, a.id, yellow2.id, {}) === null, "stack colour: the yellow +2 opens the stack");
+  ok(colour() === "yellow", "stack colour: yellow is on the table, got " + colour());
+  ok(actPlay(s, b.id, green2.id, {}) === null, "stack colour: the green +2 stacks on it");
+  ok(s.pendingDraw === 4, "stack colour: the stack grew, got " + s.pendingDraw);
+  ok(colour() === "green", "stack colour: and the stack is green now, got " + colour());
+  ok(buildView(s, c.id, 1, 0).currentColor === "green", "stack colour: the table sees green too");
+  ok(actDraw(s, c.id) === null, "stack colour: C takes the stack");
+  ok(s.pendingDraw === 0 && s.players[s.turn.playerIdx].id === a.id, "stack colour: and play moves on");
+  a.hand = [mk({ color: "yellow", value: "8" }), mk({ color: "green", value: "7" })];
+  const moves = playableMoves(s, a);
+  ok(moves.length === 1 && moves[0].card.light.color === "green",
+    "stack colour: so green plays and yellow does not, got " + moves.map((m) => m.card.light.color).join());
+}
+
+// ---------------- a call travels with the card, not with the player
+{
+  const s = rig(["A", "B"], "classic");
+  const a = s.players[0], b = s.players[1];
+  a.hand = [mk({ color: "blue", value: "9" })];
+  s.drawPile = [mk({ color: "green", value: "3" })];
+  ok(actDraw(s, a.id) === null, "uno: A is on one card and draws back up");
+  ok(a.hand.length === 2, "uno: two cards again, got " + a.hand.length);
+  ok(actUno(s, a.id) === null, "uno: and calls it while holding two");
+  ok(a.calledUno === true, "uno: the call is taken");
+  ok(actPass(s, a.id) === null, "uno: then passes");
+  ok(a.calledUno === false, "uno: the turn ended on two cards, so the call is gone");
+
+  // calling and then actually playing down to one still protects them
+  actDraw(s, b.id);
+  actPass(s, b.id);
+  ok(s.players[s.turn.playerIdx].id === a.id, "uno: the turn comes back round");
+  a.hand = [mk({ color: "red", value: "9" }), mk({ color: "blue", value: "1" })];
+  ok(actUno(s, a.id) === null && a.calledUno === true, "uno: A calls again");
+  ok(actPlay(s, a.id, a.hand[0].id, {}) === null, "uno: and plays the second to last card");
+  ok(a.hand.length === 1, "uno: one card left");
+  ok(a.calledUno === true, "uno: the call sticks, the turn ended on one card");
+  ok(!s.unoRace, "uno: so there is nothing to catch");
 }
 
 // ---------------- a draw does not lock the rest of the hand

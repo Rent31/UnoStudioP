@@ -26,7 +26,6 @@ export default function SidePanel({ view, meId, act, onClose, title = "Table log
 
   const entries = view.logTail ?? [];
   const chat = view.chat ?? [];
-  const isFlip = view.variant === "flip";
   const isFlex = view.variant === "flex";
 
   // stick to the bottom only when new items arrive
@@ -76,12 +75,9 @@ export default function SidePanel({ view, meId, act, onClose, title = "Table log
               <div className="flex items-start gap-2">
                 {face ? (
                   <span className="cardwrap pointer-events-none shrink-0 mt-0.5" style={{ "--k": 0.14 } as never}>
-                    <CardView
-                      face={face}
-                      flipDark={isFlip && view.side === "dark"}
-                      flipLight={isFlip && view.side === "light"}
-                      useFlexArt={isFlex}
-                    />
+                    {/* the stored face is already the side that was up when
+                        the card was played, so a flip must not recolour it */}
+                    <CardView face={face} useFlexArt={isFlex} />
                   </span>
                 ) : (
                   <span className="w-[17px] shrink-0" />

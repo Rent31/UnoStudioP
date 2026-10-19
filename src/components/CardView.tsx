@@ -280,7 +280,11 @@ export function CardView({ face, flipDark, flipLight, flex, useFlexArt }: CardVi
     else if (fxv === "targetDraw4") corner = cw(svg(crossI, 16), "+4");
     if (!center) classes.push("plain");
   } else {
-    const hex = flipDark ? DARK_COLORS[face.color] : LIGHT_COLORS[face.color];
+    // fall back across both palettes so a face from the other side of a flip
+    // keeps its own colour instead of falling through to the bare card
+    const hex = flipDark
+      ? DARK_COLORS[face.color] ?? LIGHT_COLORS[face.color] ?? "#17181e"
+      : LIGHT_COLORS[face.color] ?? DARK_COLORS[face.color] ?? "#17181e";
     (style as Record<string, string>)["--c"] = hex;
     const b = bits(face, flex);
     corner = b.corner;

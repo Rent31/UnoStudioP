@@ -506,6 +506,11 @@ function endRound(s: RoomState, winnerId: string, note: string) {
 // ---------------------------------------------------------------- turn helpers
 
 function advanceTurn(s: RoomState, steps = 1) {
+  // The call travels with the card, not with the player. If the turn ends and
+  // the caller is not down to that one card - they called, drew, and passed -
+  // the call went nowhere and they are exposed on their next turn again.
+  const from = s.players[s.turn.playerIdx];
+  if (from && from.hand.length !== 1) from.calledUno = false;
   const nextI = nextIdx(s, s.turn.playerIdx, steps);
   if (s.rules.chaosMode) {
     // keep whoever is up next, then scramble everyone else around them
@@ -644,7 +649,10 @@ export function actPlay(s: RoomState, playerId: string, cardId: string, opts: Pl
       s.pendingDraw += val;
       s.stackValue = val;
       if (f.value === "wildReverseDraw4") s.direction = (s.direction * -1) as 1 | -1;
-      if (isWildFace(f) && chosen) s.currentColor = chosen;
+      // a coloured draw card carries its colour onto the stack, otherwise the
+      // table would still be answering the colour the stack opened on
+      if (chosen) s.currentColor = chosen;
+      else if (!isWildFace(f)) s.currentColor = f.color;
       log(s, "stack", `${p.name} stacked ${labelOf(s, f)}. Stack is now ${s.pendingDraw}.`, { card: f, actor: p.name });
     }
     afterHandChange(s, p);

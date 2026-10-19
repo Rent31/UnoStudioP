@@ -153,7 +153,9 @@ export default function Game({ code, view, meId, act, onLeave }: {
   // whole table, until the named color turns up.
   const roulette = view.roulette;
   const rouletteColor = roulette?.color ? roulette.color[0].toUpperCase() + roulette.color.slice(1) : null;
-  const rouletteShown = roulette ? roulette.drawn.slice(-10) : [];
+  // four is what fits on a phone; anything older folds into the counter, and
+  // the newest pulls are the ones everyone is waiting on
+  const rouletteShown = roulette ? roulette.drawn.slice(-4) : [];
   const rouletteHidden = roulette ? roulette.drawn.length - rouletteShown.length : 0;
   const iPull = !!roulette && roulette.pullerId === meId && !!roulette.color && !roulette.done;
   const iNameColor = !!roulette && roulette.chooserId === meId && !roulette.color;
@@ -219,10 +221,6 @@ export default function Game({ code, view, meId, act, onLeave }: {
   const forcedSwap = selEff === "7" && view.variant === "nomercy" && liveOpponents.length > 0;
   const selOptionalTarget = selEff === "skip" || (selEff === "7" && !forcedSwap);
 
-  // the button is always live, so the table has to be told when there is
-  // something to press it for
-  const raceOnOther = !!view.unoRace && view.unoRace.playerId !== meId;
-
   const status = (() => {
     if (view.phase !== "playing") return "";
     if (view.challenge) return challengeMine ? `${view.challenge.byName} hit you with a Draw 4` : "A Draw 4 is being challenged";
@@ -233,15 +231,10 @@ export default function Game({ code, view, meId, act, onLeave }: {
       return roulette.pullerId === meId ? `Tap the deck until ${rouletteColor}` : `${roulette.pullerName} pulls until ${rouletteColor}`;
     }
     if (me?.spectator) return "You are watching this game";
-    if (raceOnOther) {
-      const mark = view.players.find((p) => p.id === view.unoRace!.playerId);
-      return `${mark ? mark.name : "Someone"} is on one card - press UNO to catch them`;
-    }
     if (myTurn) {
       if (view.pendingDraw > 0) return `Stack it or take ${view.pendingDraw}`;
       if (view.turnStage === "drewCard") return "Play a card or pass";
       if (view.turnStage === "double") return "Play a second card or end turn";
-      if (me && me.cardCount === 2 && !me.calledUno) return "Your turn - call UNO before you play";
       return "Your turn";
     }
     const cur = view.players.find((p) => p.isTurn);
@@ -379,7 +372,12 @@ export default function Game({ code, view, meId, act, onLeave }: {
                         : `${roulette.pullerId === meId ? "You pull" : `${roulette.pullerName} pulls`} until ${rouletteColor} · ${roulette.drawn.length} so far`}
                 </span>
                 <div className="flex items-center justify-center gap-1 flex-wrap max-w-[min(520px,84vw)] min-h-[46px]">
-                  {rouletteHidden > 0 && <span className="text-[11px] text-[var(--mut)] pr-0.5">+{rouletteHidden}</span>}
+                  {rouletteHidden > 0 && (
+                    <span className="text-[11px] text-[var(--mut)] pr-0.5 whitespace-nowrap"
+                      title={`${rouletteHidden} earlier pull${rouletteHidden === 1 ? "" : "s"} not shown`}>
+                      +{rouletteHidden} card{rouletteHidden === 1 ? "" : "s"}
+                    </span>
+                  )}
                   {rouletteShown.map((c, i) => (
                     <span
                       key={c.id}
@@ -550,7 +548,6 @@ export default function Game({ code, view, meId, act, onLeave }: {
         {view.phase === "playing" && (
           <button
             className={`unobtn absolute right-3 md:right-6 z-30 transition-all duration-150 ${sel ? "top-1.5 translate-y-0" : "top-0 -translate-y-1/2"}`}
-            title={raceOnOther ? "Catch them before they call it" : "Call UNO once you are down to your last card"}
             onClick={() => { playSound("uno"); act("uno"); }}
           >
             UNO
