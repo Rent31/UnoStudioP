@@ -140,7 +140,7 @@ export default function PlayerList({ players, meId, admin, locked, onReorder, on
 
   return (
     <div>
-      <div className="flex items-center justify-between mb-2.5 max-w-[460px]">
+      <div className="flex items-center justify-between mb-2.5 max-w-[460px] mx-auto">
         <span className="lbl">Drag to set the turn order</span>
         <button className="btn xs ghost" onClick={() => { playSound("shuffle"); onShuffle(); }}>
           <Shuffle size={12} /> Randomize
@@ -149,7 +149,7 @@ export default function PlayerList({ players, meId, admin, locked, onReorder, on
 
       <div
         ref={boxRef}
-        className="relative max-w-[460px]"
+        className="relative max-w-[460px] mx-auto"
         style={{ height: n * SLOT - GAP, touchAction: dragId ? "none" : undefined }}
       >
         {ids.map((id) => {
@@ -201,7 +201,7 @@ export default function PlayerList({ players, meId, admin, locked, onReorder, on
 
       {incoming.length < 10 && (
         <button
-          className="mt-2 w-full max-w-[460px] border border-dashed border-[var(--line2)] px-3 flex items-center gap-2.5 text-[var(--mut)] hover:text-[var(--ink)] hover:border-[var(--mut)] transition-colors"
+          className="mt-2 w-full max-w-[460px] mx-auto border border-dashed border-[var(--line2)] px-3 flex items-center gap-2.5 text-[var(--mut)] hover:text-[var(--ink)] hover:border-[var(--mut)] transition-colors"
           style={{ height: ROW_H }}
           onClick={() => { playSound("join"); onAddBot(); }}
         >
