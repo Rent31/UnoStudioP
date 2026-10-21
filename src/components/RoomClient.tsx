@@ -39,6 +39,7 @@ import {
   isNewerState,
   pickHost,
   PRESENCE_INTERVAL_MS,
+  PRESENCE_TTL_MS,
   type HostCandidate,
 } from "@/lib/host";
 import { dispatchGameCommand, type GameCommand } from "@/lib/game/dispatch";
@@ -81,6 +82,12 @@ const CLAIM_DELAY_MS = 1200;
 const OUTRANK_PATIENCE_MS = 5000;
 /** a peer we have not heard from directly in this long also gets a relay copy */
 const DIRECT_STALE_MS = 6000;
+/** once the host's socket is gone, let another browser take over after this */
+const HOST_LEAVE_GRACE_MS = 1500;
+/** a browser offers its own newer copy back to the host at most this often */
+const SYNC_PUSH_MS = 3000;
+/** a seat that hears nothing from the host for this long asks again */
+const REJOIN_AFTER_MS = 6000;
 
 const SOUND_RANK: Record<string, number> = {
   win: 100, eliminate: 90, catch: 85, flip: 80, roulette: 70, stack: 65,
@@ -131,9 +138,22 @@ export default function RoomClient({ code }: { code: string }) {
   // the newest copy of the room this browser has seen, used to take over
   const mirrorRef = useRef<MirrorMessage | null>(null);
   const presenceRef = useRef(new Map<string, HostCandidate>());
-  const hostBeatRef = useRef<{ peerId: string; pid: string; joinedAt: number; at: number } | null>(null);
+  /**
+   * The newest "I am running the room" packet we have seen, plus a digest of
+   * the table that browser is holding, so a peer with a newer copy can hand it
+   * back instead of the room quietly forking into two timelines.
+   */
+  const hostBeatRef = useRef<{
+    peerId: string; pid: string; joinedAt: number; at: number; seq: number; lastActionAt: number;
+  } | null>(null);
   const joinedAtRef = useRef<number>(Number.MAX_SAFE_INTEGER);
   const outrankSinceRef = useRef<number>(0);
+  /** when this browser last offered its own copy back to the host */
+  const syncPushRef = useRef<number>(0);
+  /** say hello to the host on demand, e.g. the moment the tab is looked at again */
+  const pingRef = useRef<(() => void) | null>(null);
+  /** when this browser last heard from the browser running the room */
+  const lastViewAtRef = useRef<number>(0);
   const publishAllRef = useRef<(() => void) | null>(null);
   const stopHostingRef = useRef<(() => void) | null>(null);
   const handoffRef = useRef<(() => void) | null>(null);
@@ -202,6 +222,7 @@ export default function RoomClient({ code }: { code: string }) {
     let heartbeatTimer: ReturnType<typeof setInterval>;
     let claimTimer: ReturnType<typeof setTimeout>;
     let noHostTimer: ReturnType<typeof setTimeout>;
+    let onVisibility: (() => void) | null = null;
 
     initSoundPref();
     const hostIntent = loadHostIntent(code);
@@ -284,67 +305,116 @@ export default function RoomClient({ code }: { code: string }) {
     };
     stopHostingRef.current = stopHosting;
 
-    const startHosting = (state: RoomState, version: number, localPid: string) => {
-      versionRef.current = -1;
-      soundSeq.current = 0;
-      firstView.current = true;
-      bundle = { state, version, localPid };
-      stateRef.current = state;
-      setHost(state, localPid);
-      const me = findPlayer(state, localPid);
-      if (me) { me.connected = true; me.lastSeen = Date.now(); }
-      isHostRef.current = true;
-      setIsHost(true);
-      joinedAtRef.current = me?.joinedAt ?? joinedAtRef.current;
-      hostBeatRef.current = { peerId: SELF, pid: localPid, joinedAt: joinedAtRef.current, at: Date.now() };
-      outrankSinceRef.current = 0;
-      keepMirror(state, version);
-      saveBundle();
-
-      clearInterval(joinTimer);
-      clearInterval(heartbeatTimer);
-      tickTimer = setInterval(() => {
+      // Every "I am running the room" packet carries a digest of the table this
+      // browser is holding, so a peer that has moved the room further along can
+      // hand its copy back instead of the two of them drifting apart.
+      const beatPayload = () => ({
+        live: true,
+        hostPid: bundle?.localPid,
+        joinedAt: joinedAtRef.current,
+        seq: bundle?.state.seq ?? 0,
+        lastActionAt: bundle?.state.lastActionAt ?? 0,
+      });
+      const stampOwnBeat = () => {
         if (!bundle) return;
-        const self = findPlayer(bundle.state, bundle.localPid);
-        if (self) { self.connected = true; self.lastSeen = Date.now(); }
-        if (tick(bundle.state)) {
-          bundle.version += 1;
-          publishAllRef.current?.();
-        }
-      }, 300);
-      snapshotTimer = setInterval(() => publishAllRef.current?.(), 1000);
-      helloTimer = setInterval(() => {
-        sendHostBeat({ live: true, hostPid: bundle?.localPid, joinedAt: joinedAtRef.current });
-        if (bundle) hostBeatRef.current = { peerId: SELF, pid: bundle.localPid, joinedAt: joinedAtRef.current, at: Date.now() };
-      }, 2000);
-      mirrorTimer = setInterval(() => { if (bundle) sendMirrorCopy({ state: bundle.state, version: bundle.version }); }, 2000);
-      const v = localView(0);
-      if (v) acceptView(v);
-      sendHostBeat({ live: true, hostPid: localPid, joinedAt: joinedAtRef.current });
-      sendMirrorCopy({ state, version });
-      publishAllRef.current?.();
-    };
+        hostBeatRef.current = {
+          peerId: SELF, pid: bundle.localPid, joinedAt: joinedAtRef.current, at: Date.now(),
+          seq: bundle.state.seq, lastActionAt: bundle.state.lastActionAt,
+        };
+      };
 
-    // The phone suspended us, or the tab was thrown away: leave the freshest
-    // copy behind so whoever takes over is not behind.
-    const onHide = () => {
-      if (isHostRef.current && bundle) {
-        sendMirrorCopy?.({ state: bundle.state, version: bundle.version });
+      const startHosting = (state: RoomState, version: number, localPid: string) => {
+        versionRef.current = -1;
+        soundSeq.current = 0;
+        firstView.current = true;
+        bundle = { state, version, localPid };
+        stateRef.current = state;
+        setHost(state, localPid);
+        const me = findPlayer(state, localPid);
+        if (me) { me.connected = true; me.lastSeen = Date.now(); }
+        isHostRef.current = true;
+        setIsHost(true);
+        joinedAtRef.current = me?.joinedAt ?? joinedAtRef.current;
+        outrankSinceRef.current = 0;
+        syncPushRef.current = 0;
+        stampOwnBeat();
+        keepMirror(state, version);
         saveBundle();
-      }
-    };
-    window.addEventListener("pagehide", onHide);
+
+        clearInterval(joinTimer);
+        clearInterval(heartbeatTimer);
+        tickTimer = setInterval(() => {
+          if (!bundle) return;
+          const self = findPlayer(bundle.state, bundle.localPid);
+          if (self) { self.connected = true; self.lastSeen = Date.now(); }
+          if (tick(bundle.state)) {
+            bundle.version += 1;
+            publishAllRef.current?.();
+          }
+        }, 300);
+        snapshotTimer = setInterval(() => publishAllRef.current?.(), 1000);
+        helloTimer = setInterval(() => {
+          sendHostBeat(beatPayload());
+          stampOwnBeat();
+        }, 2000);
+        mirrorTimer = setInterval(() => { if (bundle) sendMirrorCopy({ state: bundle.state, version: bundle.version }); }, 2000);
+        const v = localView(0);
+        if (v) acceptView(v);
+        sendHostBeat(beatPayload());
+        sendMirrorCopy({ state, version });
+        publishAllRef.current?.();
+      };
+
+      // The tab is being thrown away, or the phone is putting it to sleep:
+      // leave the freshest copy behind AND pass the live room straight to the
+      // next browser, so nobody has to sit out the host timeout.
+      const onHide = () => {
+        if (isHostRef.current && bundle) {
+          sendMirrorCopy?.({ state: bundle.state, version: bundle.version });
+          handoffToNext();
+          saveBundle();
+        }
+      };
+      window.addEventListener("pagehide", onHide);
+
+      // Browsers throttle timers hard in a background tab and stop them
+      // altogether on a suspended phone. Catch up the moment we are looked at
+      // again instead of waiting for the next tick to happen.
+      onVisibility = () => {
+        if (document.visibilityState !== "visible") {
+          if (isHostRef.current && bundle) sendMirrorCopy?.({ state: bundle.state, version: bundle.version });
+          return;
+        }
+        announceRef.current?.();
+        if (isHostRef.current && bundle) {
+          sendHostBeat(beatPayload());
+          stampOwnBeat();
+          sendMirrorCopy({ state: bundle.state, version: bundle.version });
+          publishAllRef.current?.();
+        } else if (sessionRef.current) {
+          // tell the room we are back at once instead of waiting for the next
+          // heartbeat, so the seat stops reading as away
+          pingRef.current?.();
+        }
+      };
+      document.addEventListener("visibilitychange", onVisibility);
 
     // hand the live room to the next browser in line, used when this one
     // steps out on purpose as well as when it is outranked
-    const handoffToNext = () => {
-      if (!bundle) return;
-      const now = Date.now();
-      const others = [...presenceRef.current.values()].filter((c) => c.peerId !== SELF);
-      const best = pickHost(others, now);
-      if (!best) return;
-      sendHandoffPacket({ state: bundle.state, version: bundle.version }, best.peerId);
-    };
+      const handoffToNext = () => {
+        if (!bundle) return;
+        const now = Date.now();
+        const others = [...presenceRef.current.values()]
+          .filter((c) => c.peerId !== SELF && now - c.at <= PRESENCE_TTL_MS);
+        // A browser that already holds a copy is the natural heir, but anybody
+        // still here will do: the packet itself is the copy they take over with,
+        // so the room never dies just because nobody had mirrored it yet.
+        const best = pickHost(others, now)
+          ?? others.slice().sort((a, b) => (isBetterHost(a, b) ? -1 : 1))[0]
+          ?? null;
+        if (!best) return;
+        sendHandoffPacket({ state: bundle.state, version: bundle.version }, best.peerId);
+      };
     handoffRef.current = handoffToNext;
 
     const claimHost = () => {
@@ -451,12 +521,39 @@ export default function RoomClient({ code }: { code: string }) {
         }
       };
 
-      const publishAll = () => {
-        if (!bundle) return;
-        persistAndLocalView();
-        for (const [peerId, pid] of peerPlayers.current) sendViewTo(peerId, pid);
-      };
-      publishAllRef.current = publishAll;
+        const publishAll = () => {
+          if (!bundle) return;
+          persistAndLocalView();
+          for (const [peerId, pid] of peerPlayers.current) sendViewTo(peerId, pid);
+        };
+        publishAllRef.current = publishAll;
+
+        /**
+         * Run somebody else's copy of the room instead of the one this browser
+         * was holding. Used whenever another browser turns out to have carried
+         * the table further: taking the newer copy keeps every browser on one
+         * timeline, rather than two tables each missing the other's players.
+         */
+          const adoptState = (state: RoomState, version: number) => {
+            if (!bundle) return;
+            const localPid = bundle.localPid;
+            // A copy this browser has no seat in belongs to a room it was
+            // removed from: take it on, then step aside so somebody who is
+            // still at that table runs it.
+            const orphaned = !findPlayer(state, localPid);
+            bundle = { state, version: Math.max(bundle.version, version) + 1, localPid };
+            stateRef.current = state;
+            setHost(state, localPid);
+            const me = findPlayer(state, localPid);
+            if (me) { me.connected = true; me.lastSeen = Date.now(); }
+            // everyone is treated as caught up to here, or the gap would replay
+            // every sound and log line from the rounds they never saw
+            soundSeq.current = Math.max(soundSeq.current, state.seq);
+            for (const peerId of [...peerSeq.current.keys()]) peerSeq.current.set(peerId, state.seq);
+            keepMirror(state, bundle.version);
+            publishAll();
+            if (orphaned) stopHosting();
+          };
 
       const runCommand = (pid: string, command: GameCommand, peerId?: string) => {
         if (!bundle) return;
@@ -492,11 +589,20 @@ export default function RoomClient({ code }: { code: string }) {
         if (data?.hostPid === sessionRef.current?.pid) return;
         const now = Date.now();
         const prev = hostBeatRef.current;
-        const incoming = { peerId, pid: String(data?.hostPid ?? ""), joinedAt: Number(data?.joinedAt ?? Number.MAX_SAFE_INTEGER), at: now };
+          const incoming = {
+            peerId,
+            pid: String(data?.hostPid ?? ""),
+            joinedAt: Number(data?.joinedAt ?? Number.MAX_SAFE_INTEGER),
+            at: now,
+            seq: Number(data?.seq ?? 0),
+            lastActionAt: Number(data?.lastActionAt ?? 0),
+          };
         const takeOver = !prev || prev.pid === incoming.pid || prev.peerId === peerId ||
           now - prev.at > HOST_TTL_MS || isBetterHost(incoming, prev);
         if (!takeOver) return;
-        if (prev?.pid !== incoming.pid) {
+        // while this browser is the one running the room its own beat is the
+        // truth; another browser claiming host is settled by the monitor
+        if (!isHostRef.current && prev?.pid !== incoming.pid) {
           // different host, different version numbering: start over rather
           // than dropping everything they send as "too old"
           versionRef.current = -1;
@@ -565,6 +671,9 @@ export default function RoomClient({ code }: { code: string }) {
         player.lastSeen = Date.now();
         peerPlayers.current.set(peerId, player.id);
         sendViewTo(peerId, player.id, true);
+        // hand over a copy of the room there and then, so this browser can
+        // take over straight away instead of waiting for the next broadcast
+        sendMirrorCopy({ state: bundle.state, version: bundle.version }, peerId);
         publishAll();
       });
 
@@ -577,6 +686,7 @@ export default function RoomClient({ code }: { code: string }) {
         sessionRef.current = data.session;
         setSession(data.session);
         if (data.joinedAt) joinedAtRef.current = data.joinedAt;
+        lastViewAtRef.current = Date.now();
         setJoinBusy(false);
         setJoinErr("");
         firstView.current = true;
@@ -585,6 +695,12 @@ export default function RoomClient({ code }: { code: string }) {
 
       onWire("snapshot", snapshotAction, (data: { view: ViewData }, peerId: string) => {
         if (isHostRef.current || peerId !== hostPeerRef.current) return;
+        lastViewAtRef.current = Date.now();
+        // A host that took over numbers its views from scratch. A small step
+        // back is a packet arriving out of order; a big one means this browser
+        // is pinned to a dead numbering and would drop everything they send
+        // from here on.
+        if (data.view.version + 3 < versionRef.current) versionRef.current = -1;
         acceptView(data.view);
       });
 
@@ -592,15 +708,33 @@ export default function RoomClient({ code }: { code: string }) {
       // goes away mid game
       onWire("mirror", mirrorAction, (data: MirrorMessage, peerId: string) => {
         if (!data?.state) return;
+        const state = normalizeState(data.state);
+        const version = data.version ?? 1;
+        // The newest table wins, whoever is holding it. Without this a
+        // browser that took over while this one was asleep leaves the room
+        // forked: two tables, each missing the other's players and plays.
+        if (isHostRef.current && bundle && isNewerState(state, bundle.state)) {
+          adoptState(state, version);
+          return;
+        }
+        // a participant only trusts copies from the browser running the room
         if (!isHostRef.current && hostPeerRef.current && peerId !== hostPeerRef.current) return;
-        keepMirror(normalizeState(data.state), data.version ?? 1);
+        keepMirror(state, version);
       });
 
       onWire("handoff", handoffAction, (data: MirrorMessage, peerId: string) => {
         if (!data?.state) return;
         const state = normalizeState(data.state);
-        mirrorRef.current = { state, version: data.version ?? 1 };
+        const version = data.version ?? 1;
+        mirrorRef.current = { state, version };
         saveMirror(code, mirrorRef.current);
+        // already running the room: keep whichever copy has moved further.
+        // Dropping theirs is what used to fork the room when a sleeping tab
+        // woke up and carried on from a table everyone else had left behind.
+        if (isHostRef.current) {
+          if (bundle && isNewerState(state, bundle.state)) adoptState(state, version);
+          return;
+        }
         hostBeatRef.current = null;
         hostPeerRef.current = peerId;
         claimHost();
@@ -648,6 +782,11 @@ export default function RoomClient({ code }: { code: string }) {
       };
       sendJoinRef.current = requestJoin;
 
+      pingRef.current = () => {
+        const hostPeer = hostPeerRef.current;
+        if (hostPeer) sendCommandWire({ type: "ping", nonce: nonce() }, hostPeer);
+      };
+
       sendCommandRef.current = async (command) => {
         const hostPeer = hostPeerRef.current;
         if (!hostPeer) {
@@ -666,7 +805,10 @@ export default function RoomClient({ code }: { code: string }) {
       };
 
       room.onPeerJoin = (peerId) => {
-        if (isHostRef.current) sendHostBeat({ live: true, hostPid: bundle?.localPid, joinedAt: joinedAtRef.current }, peerId);
+        // say who we are at once, so a new arrival can be picked to run the
+        // room without waiting a whole presence tick to learn about them
+        announceRef.current?.();
+        if (isHostRef.current) sendHostBeat(beatPayload(), peerId);
       };
 
       room.onPeerLeave = (peerId) => {
@@ -685,7 +827,18 @@ export default function RoomClient({ code }: { code: string }) {
           }
         } else if (peerId === hostPeerRef.current) {
           hostPeerRef.current = null;
-          setNetworkNote("Host dropped. Looking for the next one…");
+          // The socket we were talking to is gone, so this is a departure
+          // rather than a hiccup: let the next browser take the room in about
+          // a second instead of sitting out the whole host timeout. A beat
+          // that still arrives over the relay refreshes it and nothing moves.
+          const beat = hostBeatRef.current;
+          if (beat) {
+            hostBeatRef.current = {
+              ...beat,
+              at: Math.min(beat.at, Date.now() - (HOST_TTL_MS - HOST_LEAVE_GRACE_MS)),
+            };
+          }
+          setNetworkNote("Host left. Passing the room to the next player…");
         }
       };
 
@@ -719,6 +872,22 @@ export default function RoomClient({ code }: { code: string }) {
         const beat = hostBeatRef.current;
         const hostGone = !beat || now - beat.at > HOST_TTL_MS;
         if (hostGone) { claimHost(); return; }
+        // The host is talking but no table is getting through: ask for the seat
+        // again instead of sitting on a frozen room. Only for a browser that
+        // still holds one - asking back would undo a departure.
+        if (hostPeerRef.current && viewRef.current?.meId && now - lastViewAtRef.current > REJOIN_AFTER_MS) {
+          lastViewAtRef.current = now;
+          requestJoin(true);
+        }
+        // This browser is holding a table that has moved further than the
+        // host's: offer it back, rather than let the room carry on from the
+        // older copy and lose everything that happened on this one.
+        const held = mirrorRef.current;
+        if (held && beat.peerId !== SELF && now - syncPushRef.current > SYNC_PUSH_MS &&
+            held.state.seq > beat.seq) {
+          syncPushRef.current = now;
+          sendMirrorCopy({ state: held.state, version: held.version }, beat.peerId);
+        }
         // outranked the current host: give them a moment to hand it over
         if (isBetterHost(best, beat)) {
           if (!outrankSinceRef.current) outrankSinceRef.current = now;
@@ -789,7 +958,7 @@ export default function RoomClient({ code }: { code: string }) {
         noHostTimer = setTimeout(() => {
           if (viewRef.current || hostPeerRef.current) return;
           setNetworkNote(relayRef.current?.connected
-            ? "No host found yet. Check the code, or ask whoever opened the room to come back."
+            ? "Nobody is running this room right now. Check the code, or ask whoever opened it to come back."
             : "Cannot reach the room. Your network is blocking both peer-to-peer and the relay - try mobile data, or another network.");
         }, 10000);
       }
@@ -799,6 +968,7 @@ export default function RoomClient({ code }: { code: string }) {
     return () => {
       stopped = true;
       window.removeEventListener("pagehide", onHide);
+      if (onVisibility) document.removeEventListener("visibilitychange", onVisibility);
       clearInterval(tickTimer);
       clearInterval(snapshotTimer);
       clearInterval(helloTimer);
@@ -811,6 +981,7 @@ export default function RoomClient({ code }: { code: string }) {
       clearTimeout(noHostTimer);
       sendJoinRef.current = null;
       sendCommandRef.current = null;
+      pingRef.current = null;
       hostCommandRef.current = null;
       publishAllRef.current = null;
       stopHostingRef.current = null;
