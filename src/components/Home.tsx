@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { ArrowRight, Info } from "lucide-react";
@@ -21,28 +21,42 @@ export default function Home() {
   const [code, setCode] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const navTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => { setName(savedName()); }, []);
+  useEffect(() => () => { if (navTimer.current) clearTimeout(navTimer.current); }, []);
 
   const go = () => {
     const nm = name.trim();
     if (!nm) { setError("Pick a name."); playSound("error"); return; }
     if (mode === "join" && code.trim().length < 4) { setError("Enter the room code."); playSound("error"); return; }
+    if (busy) return;
     setBusy(true); setError("");
     saveName(nm);
 
+    const roomCode = mode === "create" ? generateRoomCode() : code.trim().toUpperCase();
+    const target = `/room/${roomCode}`;
     if (mode === "create") {
-      const roomCode = generateRoomCode();
       createHostIntent(roomCode, nm);
       playSound("join");
-      router.push(`/room/${roomCode}`);
-      return;
+    } else {
+      savePendingName(roomCode, nm);
+      playSound("click");
     }
 
-    const roomCode = code.trim().toUpperCase();
-    savePendingName(roomCode, nm);
-    playSound("click");
-    router.push(`/room/${roomCode}`);
+    try {
+      router.push(target);
+    } catch {
+      window.location.href = target;
+      return;
+    }
+    // The router holds this page on screen until the room is ready, so a route
+    // that never resolved left the button locked on "One moment" with nowhere
+    // to go. Give it a moment, then hand the button back and go there directly.
+    navTimer.current = setTimeout(() => {
+      setBusy(false);
+      window.location.href = target;
+    }, 3000);
   };
 
   return (

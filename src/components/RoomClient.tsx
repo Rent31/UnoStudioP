@@ -128,6 +128,7 @@ export default function RoomClient({ code }: { code: string }) {
   const [view, setView] = useState<ViewData | null>(null);
   const [gone, setGone] = useState<string | null>(null);
   const [networkNote, setNetworkNote] = useState("Connecting to peers…");
+  const [bootNote, setBootNote] = useState("");
   const [toast, setToast] = useState("");
   const [seenChatId, setSeenChatId] = useState<number | null>(null);
   const [name, setName] = useState("");
@@ -237,9 +238,15 @@ export default function RoomClient({ code }: { code: string }) {
     let heartbeatTimer: ReturnType<typeof setInterval>;
     let claimTimer: ReturnType<typeof setTimeout>;
     let noHostTimer: ReturnType<typeof setTimeout>;
+    let bootTimer: ReturnType<typeof setTimeout>;
     let onVisibility: (() => void) | null = null;
 
     initSoundPref();
+    // Say so rather than spinning forever: the peer code loads as a separate
+    // chunk, so a stalled download used to leave this screen silent for good.
+    bootTimer = setTimeout(() => {
+      setBootNote("Still opening the room. If it stays here, reload - the game files may not have finished downloading.");
+    }, 12000);
     const hostIntent = loadHostIntent(code);
     const storedSession = loadSession(code);
     desiredName.current = loadPendingName(code) || storedSession?.name || savedName();
@@ -994,6 +1001,7 @@ export default function RoomClient({ code }: { code: string }) {
       clearInterval(heartbeatTimer);
       clearTimeout(claimTimer);
       clearTimeout(noHostTimer);
+      clearTimeout(bootTimer);
       sendJoinRef.current = null;
       sendCommandRef.current = null;
       pingRef.current = null;
@@ -1076,7 +1084,12 @@ export default function RoomClient({ code }: { code: string }) {
   }
 
   if (session === undefined) {
-    return <Center><p className="text-[13px] text-[var(--mut)] a-pulse">Opening peer room</p></Center>;
+    return (
+      <Center>
+        <p className="text-[13px] text-[var(--mut)] a-pulse">Opening peer room</p>
+        {bootNote && <p className="text-[12px] text-[var(--mut)] mt-3 max-w-[330px] leading-snug">{bootNote}</p>}
+      </Center>
+    );
   }
 
   // A participant can name themselves before the host is discovered. Existing
