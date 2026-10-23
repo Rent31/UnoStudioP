@@ -16,8 +16,9 @@ import SidePanel from "@/components/SidePanel";
 
 const VARIANTS: Variant[] = ["classic", "nomercy", "flip", "flex", "allwild"];
 
-export default function Lobby({ code, view, meId, act, onLeave }: {
+export default function Lobby({ code, view, meId, act, onLeave, unreadChat, onChatSeen }: {
   code: string; view: ViewData; meId: string; act: ActFn; onLeave: () => void;
+  unreadChat?: boolean; onChatSeen?: () => void;
 }) {
   const [tab, setTab] = useState<"game" | "players">("game");
   const [copied, setCopied] = useState(false);
@@ -40,6 +41,10 @@ export default function Lobby({ code, view, meId, act, onLeave }: {
   const goal = view.rules.pointGoal;
   const goalPreset = (GOAL_OPTIONS as readonly number[]).includes(goal);
   useEffect(() => { if (!goalPreset && goal > 0) setCustomGoal(String(goal)); }, [goal, goalPreset]);
+
+  // reading the panel clears the dot, and keeps it clear as messages land
+  const chatTop = view.chat?.length ? view.chat[view.chat.length - 1].id : 0;
+  useEffect(() => { if (showLog) onChatSeen?.(); }, [showLog, chatTop, onChatSeen]);
 
   const applyCustomGoal = () => {
     const n = Math.max(0, Math.min(9999, parseInt(customGoal, 10) || 0));
@@ -108,9 +113,10 @@ export default function Lobby({ code, view, meId, act, onLeave }: {
           <button className={`iconbtn ${invited ? "on" : ""}`} onClick={copyInvite} title="Copy invite link">
             {invited ? <Check size={15} /> : <Link2 size={15} />}
           </button>
-          <button className={`iconbtn ${showLog ? "on" : ""}`} onClick={() => setShowLog(!showLog)} title="Log and chat">
-            <ScrollText size={15} />
-          </button>
+            <button className={`iconbtn relative ${showLog ? "on" : ""}`} onClick={() => setShowLog(!showLog)} title="Log and chat">
+              <ScrollText size={15} />
+              {unreadChat && <span className="chatdot a-pop" />}
+            </button>
           <SoundToggle />
           <ThemeToggle />
         </div>

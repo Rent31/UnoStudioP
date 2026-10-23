@@ -31,8 +31,9 @@ function faceOf(view: ViewData, c: { light: Face; dark: Face | null }): Face {
 
 interface Inspect { face: Face; flexColor?: ColorName | null; flexValue?: FlexValue | null; flipIcon?: boolean; dark?: boolean; light?: boolean; note?: string }
 
-export default function Game({ code, view, meId, act, onLeave }: {
+export default function Game({ code, view, meId, act, onLeave, unreadChat, onChatSeen }: {
   code: string; view: ViewData; meId: string; act: ActFn; onLeave: () => void;
+  unreadChat?: boolean; onChatSeen?: () => void;
 }) {
   const me = view.players.find((p) => p.id === meId);
   const myIdx = view.players.findIndex((p) => p.id === meId);
@@ -143,6 +144,10 @@ export default function Game({ code, view, meId, act, onLeave }: {
   }, [banner]);
 
   useEffect(() => { setSel(null); setSelColor(null); setSelTarget(null); setSelFlex(false); }, [view.turnStage, me?.cardCount, myTurn]);
+
+  // reading the panel clears the dot, and keeps it clear as messages land
+  const chatTop = view.chat?.length ? view.chat[view.chat.length - 1].id : 0;
+  useEffect(() => { if (showLog) onChatSeen?.(); }, [showLog, chatTop, onChatSeen]);
 
   if (!me) return null;
 
@@ -255,7 +260,7 @@ export default function Game({ code, view, meId, act, onLeave }: {
         <span className="ml-auto flex items-center gap-2">
           {!isAllWild && <i className="w-4 h-4 border border-black/25" style={{ background: colorHex(view.currentColor) }} />}
           {view.iAmAdmin && <button className="iconbtn" onClick={() => setShowAdmin(true)} title="Admin"><Shield size={14} /></button>}
-          <button className={`iconbtn ${showLog ? "on" : ""}`} onClick={() => setShowLog(!showLog)} title="Log"><ScrollText size={14} /></button>
+          <button className={`iconbtn relative ${showLog ? "on" : ""}`} onClick={() => setShowLog(!showLog)} title="Log"><ScrollText size={14} />{unreadChat && <span className="chatdot a-pop" />}</button>
           <SoundToggle />
           <ThemeToggle />
         </span>

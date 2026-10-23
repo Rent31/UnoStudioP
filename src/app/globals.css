@@ -233,6 +233,13 @@
 .iconbtn.on { color: #fff; border-color: #fff; }
 .iconbtn:disabled { opacity: .3; pointer-events: none; }
 
+/* unread chat marker: centred under the glyph, clear of the button border */
+.chatdot {
+  position: absolute; left: 0; right: 0; bottom: 5px; margin: 0 auto;
+  width: 5px; height: 5px; border-radius: 999px;
+  background: var(--acc); pointer-events: none;
+}
+
 .swatch { width: 42px; height: 42px; border: 2px solid transparent; transition: transform .14s ease, border-color .14s ease; }
 .swatch:hover { transform: scale(1.1); }
 .swatch.sel { border-color: var(--ink); transform: scale(1.1); }

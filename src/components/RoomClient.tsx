@@ -117,6 +117,11 @@ function nonce() {
   return `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 9)}`;
 }
 
+/** id of the newest line in a view's chat; ids only ever go up */
+function chatTopOf(view: ViewData): number {
+  return view.chat?.length ? view.chat[view.chat.length - 1].id : 0;
+}
+
 export default function RoomClient({ code }: { code: string }) {
   const router = useRouter();
   const [session, setSession] = useState<Session | null | undefined>(undefined);
@@ -124,6 +129,7 @@ export default function RoomClient({ code }: { code: string }) {
   const [gone, setGone] = useState<string | null>(null);
   const [networkNote, setNetworkNote] = useState("Connecting to peers…");
   const [toast, setToast] = useState("");
+  const [seenChatId, setSeenChatId] = useState<number | null>(null);
   const [name, setName] = useState("");
   const [joinBusy, setJoinBusy] = useState(false);
   const [joinErr, setJoinErr] = useState("");
@@ -180,6 +186,12 @@ export default function RoomClient({ code }: { code: string }) {
   sessionRef.current = session ?? null;
   viewRef.current = view;
 
+  const chatTop = view ? chatTopOf(view) : 0;
+  const markChatSeen = useCallback(() => {
+    setSeenChatId((prev) => (prev === null || chatTop > prev ? chatTop : prev));
+  }, [chatTop]);
+  const unreadChat = seenChatId !== null && chatTop > seenChatId;
+
   const showToast = useCallback((msg: string) => {
     setToast(msg);
     if (toastTimer.current) clearTimeout(toastTimer.current);
@@ -189,6 +201,9 @@ export default function RoomClient({ code }: { code: string }) {
   const acceptView = useCallback((next: ViewData) => {
     if (next.version < versionRef.current) return;
     versionRef.current = next.version;
+    // chat that is already here when the room opens is not new, so the dot only
+    // ever marks lines that turned up after the first table arrived
+    setSeenChatId((prev) => (prev === null ? chatTopOf(next) : prev));
 
     if (firstView.current) {
       firstView.current = false;
@@ -1117,9 +1132,15 @@ export default function RoomClient({ code }: { code: string }) {
   return (
     <div className="relative">
       {view.phase === "lobby" ? (
-        <Lobby code={code} view={view} meId={session?.pid ?? view.meId!} act={act} onLeave={leaveForHome} />
+        <Lobby
+          code={code} view={view} meId={session?.pid ?? view.meId!} act={act} onLeave={leaveForHome}
+          unreadChat={unreadChat} onChatSeen={markChatSeen}
+        />
       ) : (
-        <Game code={code} view={view} meId={session?.pid ?? view.meId!} act={act} onLeave={leaveForHome} />
+        <Game
+          code={code} view={view} meId={session?.pid ?? view.meId!} act={act} onLeave={leaveForHome}
+          unreadChat={unreadChat} onChatSeen={markChatSeen}
+        />
       )}
       {networkNote && (
         <div className="fixed top-14 left-1/2 -translate-x-1/2 z-50 a-pop max-w-[90vw]">
