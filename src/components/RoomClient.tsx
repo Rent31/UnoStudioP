@@ -183,6 +183,7 @@ export default function RoomClient({ code }: { code: string }) {
   // how recently each peer was heard from over WebRTC rather than the relay
   const directPeers = useRef(new Map<string, number>());
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const leaveNavTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   sessionRef.current = session ?? null;
   viewRef.current = view;
@@ -379,7 +380,14 @@ export default function RoomClient({ code }: { code: string }) {
           sendHostBeat(beatPayload());
           stampOwnBeat();
         }, 2000);
-        mirrorTimer = setInterval(() => { if (bundle) sendMirrorCopy({ state: bundle.state, version: bundle.version }); }, 2000);
+        mirrorTimer = setInterval(() => {
+          // A copy of the room only matters while somebody else could take it
+          // over. On your own it is pure chatter: a newcomer is handed one the
+          // moment they join, so nothing is lost by not shipping it to nobody.
+          if (bundle && presenceRef.current.size > 0) {
+            sendMirrorCopy({ state: bundle.state, version: bundle.version });
+          }
+        }, 2000);
         const v = localView(0);
         if (v) acceptView(v);
         sendHostBeat(beatPayload());
@@ -868,6 +876,15 @@ export default function RoomClient({ code }: { code: string }) {
       const monitor = () => {
         if (stopped) return;
         const now = Date.now();
+        // drop browsers that stopped saying who they are, so "am I on my own?"
+        // cannot be answered by somebody who left a while ago
+        for (const [pid, c] of presenceRef.current) {
+          if (now - c.at > 30_000) presenceRef.current.delete(pid);
+        }
+        // On your own there is no succession to run: nobody to hand over to,
+        // nobody to be outranked by, no second copy to reconcile. The host
+        // beat still goes out so whoever arrives next can find the room.
+        const alone = presenceRef.current.size === 0;
         // forget peers that have gone quiet, so the maps cannot grow forever
         for (const [peerId, at] of directPeers.current) {
           if (now - at > HOST_TTL_MS) directPeers.current.delete(peerId);
@@ -882,7 +899,7 @@ export default function RoomClient({ code }: { code: string }) {
           if (!bundle) return;
           // Someone with an earlier seat is here: hand the room over with the
           // live state rather than making them reconstruct it.
-          if (best && best.pid !== bundle.localPid && best.peerId !== SELF &&
+          if (!alone && best && best.pid !== bundle.localPid && best.peerId !== SELF &&
               isBetterHost(best, { joinedAt: joinedAtRef.current, pid: bundle.localPid })) {
             sendHandoffPacket({ state: bundle.state, version: bundle.version }, best.peerId);
             stopHosting();
@@ -890,6 +907,7 @@ export default function RoomClient({ code }: { code: string }) {
           return;
         }
 
+        if (alone) { outrankSinceRef.current = 0; return; }
         if (!best || !me || best.pid !== me.pid) { outrankSinceRef.current = 0; return; }
         const beat = hostBeatRef.current;
         const hostGone = !beat || now - beat.at > HOST_TTL_MS;
@@ -999,6 +1017,7 @@ export default function RoomClient({ code }: { code: string }) {
       clearInterval(monitorTimer);
       clearInterval(joinTimer);
       clearInterval(heartbeatTimer);
+      if (leaveNavTimer.current) clearTimeout(leaveNavTimer.current);
       clearTimeout(claimTimer);
       clearTimeout(noHostTimer);
       clearTimeout(bootTimer);
@@ -1054,22 +1073,36 @@ export default function RoomClient({ code }: { code: string }) {
     const state = stateRef.current ?? mirrorRef.current?.state ?? null;
     const others = state ? state.players.filter((p) => !p.left && p.id !== current?.pid).length : 0;
 
+    // Everything here is best effort. Leaving a room whose sockets are already
+    // dead used to hang on the peer teardown and never reach the router, so no
+    // step below is allowed to block the way home.
+    const step = async (work: () => unknown) => {
+      try {
+        await Promise.race([Promise.resolve(work()), new Promise((done) => setTimeout(done, 1500))]);
+      } catch { /* the room is going away anyway */ }
+    };
+
     // step away from the seat, then pass the room on so nobody has to wait
     // for this browser to go quiet before the next one picks it up
-    if (current) await act("leave");
+    if (current) await step(() => act("leave"));
     handoffRef.current?.();
     publishAllRef.current?.();
     stopHostingRef.current?.();
 
-    if (isHostRef.current || others === 0) {
-      // nobody left to hand the room to
-      if (closeRoomRef.current) await closeRoomRef.current();
-      else { clearHostRoom(code); clearSession(code); }
+    if (others === 0) {
+      // nobody left to hand the room to, so take it down with us
+      clearHostRoom(code);
+      clearSession(code);
+      await step(() => closeRoomRef.current?.() ?? roomRef.current?.leave());
     } else {
-      await roomRef.current?.leave().catch(() => {});
       clearPendingName(code);
+      await step(() => roomRef.current?.leave());
     }
+
     router.push("/");
+    // and go the direct way if the router never lands, so Leave always works
+    if (leaveNavTimer.current) clearTimeout(leaveNavTimer.current);
+    leaveNavTimer.current = setTimeout(() => { window.location.href = "/"; }, 3000);
   }, [act, code, router]);
 
   // ---------------------------------------------------------------- Render

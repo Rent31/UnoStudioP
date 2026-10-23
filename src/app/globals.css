@@ -233,11 +233,15 @@
 .iconbtn.on { color: #fff; border-color: #fff; }
 .iconbtn:disabled { opacity: .3; pointer-events: none; }
 
-/* unread chat marker: centred under the glyph, clear of the button border */
+/* Unread chat marker. A badge on the top-right corner of the button, which is
+   where every "something new in here" dot lives; the ring in the page colour
+   lifts it off the border so it reads clearly on either theme. */
 .chatdot {
-  position: absolute; left: 0; right: 0; bottom: 5px; margin: 0 auto;
-  width: 5px; height: 5px; border-radius: 999px;
-  background: var(--acc); pointer-events: none;
+  position: absolute; top: 3px; right: 3px;
+  width: 7px; height: 7px; border-radius: 999px;
+  background: var(--acc);
+  box-shadow: 0 0 0 2px var(--bg);
+  pointer-events: none;
 }
 
 .swatch { width: 42px; height: 42px; border: 2px solid transparent; transition: transform .14s ease, border-color .14s ease; }
