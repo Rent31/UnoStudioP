@@ -82,8 +82,6 @@ const CLAIM_DELAY_MS = 1200;
 const OUTRANK_PATIENCE_MS = 5000;
 /** a peer we have not heard from directly in this long also gets a relay copy */
 const DIRECT_STALE_MS = 6000;
-/** once the host's socket is gone, let another browser take over after this */
-const HOST_LEAVE_GRACE_MS = 1500;
 /** a browser offers its own newer copy back to the host at most this often */
 const SYNC_PUSH_MS = 3000;
 /** a seat that hears nothing from the host for this long asks again */
@@ -235,8 +233,8 @@ export default function RoomClient({ code }: { code: string }) {
     let mirrorTimer: ReturnType<typeof setInterval>;
     let presenceTimer: ReturnType<typeof setInterval>;
     let monitorTimer: ReturnType<typeof setInterval>;
-    let joinTimer: ReturnType<typeof setInterval>;
-    let heartbeatTimer: ReturnType<typeof setInterval>;
+    let joinTimer: ReturnType<typeof setInterval> | undefined;
+    let heartbeatTimer: ReturnType<typeof setInterval> | undefined;
     let claimTimer: ReturnType<typeof setTimeout>;
     let noHostTimer: ReturnType<typeof setTimeout>;
     let bootTimer: ReturnType<typeof setTimeout>;
@@ -366,6 +364,8 @@ export default function RoomClient({ code }: { code: string }) {
 
         clearInterval(joinTimer);
         clearInterval(heartbeatTimer);
+        joinTimer = undefined;
+        heartbeatTimer = undefined;
         tickTimer = setInterval(() => {
           if (!bundle) return;
           const self = findPlayer(bundle.state, bundle.localPid);
@@ -465,7 +465,10 @@ export default function RoomClient({ code }: { code: string }) {
       const room = joinRoom(
         { appId: APP_ID, password: code, rtcConfig: rtcConfig() },
         code,
-        { onJoinError: () => !stopped && setNetworkNote("Peer connection failed. Trying the relay…") },
+        // ICE setup can fail even when the relay path is healthy. Keep that
+        // routine transport fallback silent in the room UI; actual join timeouts
+        // are explained by the no-view recovery screen below.
+        { onJoinError: () => { /* relay fallback is expected and stays quiet */ } },
       );
       roomRef.current = room;
       selfPeerRef.current = selfId;
@@ -708,7 +711,7 @@ export default function RoomClient({ code }: { code: string }) {
       });
 
       onWire("welcome", welcomeAction, (data: WelcomeMessage, peerId: string) => {
-        if (isHostRef.current) return;
+        if (isHostRef.current || (hostPeerRef.current && peerId !== hostPeerRef.current)) return;
         hostPeerRef.current = peerId;
         saveSession(code, data.session);
         clearPendingName(code);
@@ -716,6 +719,10 @@ export default function RoomClient({ code }: { code: string }) {
         sessionRef.current = data.session;
         setSession(data.session);
         if (data.joinedAt) joinedAtRef.current = data.joinedAt;
+        // Only call this peer joined after a welcome actually lands. Marking it
+        // joined when we merely sent a request prevented retries when that
+        // welcome was lost, leaving the player on a permanent Joining screen.
+        joinedHostRef.current = peerId;
         lastViewAtRef.current = Date.now();
         setJoinBusy(false);
         setJoinErr("");
@@ -783,6 +790,14 @@ export default function RoomClient({ code }: { code: string }) {
       onWire("error", errorAction, (data: { message: string }, peerId: string) => {
         if (isHostRef.current || (hostPeerRef.current && peerId !== hostPeerRef.current)) return;
         setJoinBusy(false);
+        if (data.message === "Rejoin the room.") {
+          // The host may have dropped its peer-to-seat association while the
+          // relay stayed up. Re-register it immediately rather than leaving
+          // the user frozen until the next timeout.
+          joinedHostRef.current = null;
+          requestJoin(true);
+          return;
+        }
         setJoinErr(data.message);
         showToast(data.message);
         playSound("error");
@@ -808,9 +823,19 @@ export default function RoomClient({ code }: { code: string }) {
         };
         setJoinBusy(true);
         sendJoin(data, hostPeer);
-        joinedHostRef.current = hostPeer;
       };
       sendJoinRef.current = requestJoin;
+
+      const ensureClientLoops = () => {
+        if (!joinTimer) joinTimer = setInterval(requestJoin, 2200);
+        if (!heartbeatTimer) {
+          heartbeatTimer = setInterval(() => {
+            const current = sessionRef.current;
+            if (!current || !hostPeerRef.current) return;
+            sendCommandWire({ type: "ping", nonce: nonce() }, hostPeerRef.current);
+          }, 8000);
+        }
+      };
 
       pingRef.current = () => {
         const hostPeer = hostPeerRef.current;
@@ -845,30 +870,24 @@ export default function RoomClient({ code }: { code: string }) {
         directPeers.current.delete(peerId); // from here on it needs the relay
         presenceRef.current.forEach((c, pid) => { if (c.peerId === peerId) presenceRef.current.delete(pid); });
         if (isHostRef.current && bundle) {
+          // Trystero's peer-leave is the WebRTC data path, not proof that the
+          // browser left the room: its relay connection may still be healthy.
+          // Keep the peer-to-seat mapping so snapshots and commands can carry
+          // on over MQTT instead of making the live player look kicked.
           const pid = peerPlayers.current.get(peerId);
-          peerPlayers.current.delete(peerId);
-          peerSeq.current.delete(peerId);
-          seenCommands.current.delete(peerId);
           if (pid) {
             const p = findPlayer(bundle.state, pid);
-            if (p) p.connected = false;
-            bundle.version += 1;
-            publishAll();
+            if (p) p.lastSeen = Date.now();
           }
         } else if (peerId === hostPeerRef.current) {
-          hostPeerRef.current = null;
-          // The socket we were talking to is gone, so this is a departure
-          // rather than a hiccup: let the next browser take the room in about
-          // a second instead of sitting out the whole host timeout. A beat
-          // that still arrives over the relay refreshes it and nothing moves.
-          const beat = hostBeatRef.current;
-          if (beat) {
-            hostBeatRef.current = {
-              ...beat,
-              at: Math.min(beat.at, Date.now() - (HOST_TTL_MS - HOST_LEAVE_GRACE_MS)),
-            };
-          }
-          setNetworkNote("Host left. Passing the room to the next player…");
+          // A direct data channel closing is only a transport change. Keep the
+          // host identity until its heartbeats actually expire; otherwise a
+          // temporary ICE restart makes every client race to take over the
+          // room while the real host is still serving it through the relay.
+          joinedHostRef.current = null;
+          lastViewAtRef.current = Date.now();
+          if (!viewRef.current) setNetworkNote("Reconnecting to the room…");
+          sendJoinRef.current?.(true);
         }
       };
 
@@ -902,7 +921,12 @@ export default function RoomClient({ code }: { code: string }) {
           if (!alone && best && best.pid !== bundle.localPid && best.peerId !== SELF &&
               isBetterHost(best, { joinedAt: joinedAtRef.current, pid: bundle.localPid })) {
             sendHandoffPacket({ state: bundle.state, version: bundle.version }, best.peerId);
+            hostPeerRef.current = best.peerId;
+            hostBeatRef.current = null;
+            joinedHostRef.current = null;
             stopHosting();
+            ensureClientLoops();
+            requestJoin(true);
           }
           return;
         }
@@ -989,21 +1013,26 @@ export default function RoomClient({ code }: { code: string }) {
       }
 
       if (!isHostRef.current) {
-        joinTimer = setInterval(requestJoin, 2200);
-        heartbeatTimer = setInterval(() => {
-          const current = sessionRef.current;
-          if (!current || !hostPeerRef.current) return;
-          sendCommandWire({ type: "ping", nonce: nonce() }, hostPeerRef.current);
-        }, 8000);
+        ensureClientLoops();
         noHostTimer = setTimeout(() => {
-          if (viewRef.current || hostPeerRef.current) return;
-          setNetworkNote(relayRef.current?.connected
-            ? "Nobody is running this room right now. Check the code, or ask whoever opened it to come back."
-            : "Cannot reach the room. Your network is blocking both peer-to-peer and the relay - try mobile data, or another network.");
+          if (viewRef.current) return;
+          if (hostPeerRef.current) {
+            setNetworkNote("The room was found but has not sent your seat yet. Tap Reconnect to try again.");
+          } else {
+            setNetworkNote(relayRef.current?.connected
+              ? "Nobody is running this room right now. Check the code, or ask whoever opened it to come back."
+              : "Cannot reach the room. Try Reconnect, mobile data, or another network.");
+          }
         }, 10000);
       }
 
-    })().catch(() => !stopped && setNetworkNote("WebRTC could not start in this browser."));
+    })().catch(() => {
+      if (stopped) return;
+      setNetworkNote("Could not open the peer connection. Reconnect or reload to try again.");
+      // Do not leave the page on the indefinite boot spinner when a lazy import
+      // or browser API fails before the room transport is created.
+      setSession(storedSession ?? null);
+    });
 
     return () => {
       stopped = true;
@@ -1065,7 +1094,14 @@ export default function RoomClient({ code }: { code: string }) {
     setName(clean);
     setJoinBusy(true);
     setJoinErr("");
-    sendJoinRef.current?.();
+    if (!sendJoinRef.current) {
+      // The transport may have failed before its actions were registered.
+      // A reload retries the entire peer/relay setup instead of silently doing
+      // nothing behind the Join button.
+      window.location.reload();
+      return;
+    }
+    sendJoinRef.current();
   }, [code]);
 
   const leaveForHome = useCallback(async () => {
@@ -1142,8 +1178,8 @@ export default function RoomClient({ code }: { code: string }) {
             onChange={(e) => setName(e.target.value)}
             onKeyDown={(e) => { if (e.key === "Enter") doJoin(name); }}
           />
-          <button className="btn acc w-full mt-2.5" onClick={() => doJoin(name)} disabled={joinBusy && !!hostPeerRef.current}>
-            {joinBusy && hostPeerRef.current ? "Joining" : <><LogIn size={14} /> Join peer room</>}
+          <button className="btn acc w-full mt-2.5" onClick={() => doJoin(name)}>
+            {joinBusy && hostPeerRef.current ? "Retry join" : <><LogIn size={14} /> Join peer room</>}
           </button>
           {joinErr && <p className="text-[12px] text-[#ff6b52] mt-2.5">{joinErr}</p>}
           <button className="btn ghost w-full mt-2" onClick={() => router.push("/")}>Back</button>
@@ -1157,7 +1193,14 @@ export default function RoomClient({ code }: { code: string }) {
       <Center>
         <Radio size={18} className="text-[var(--mut)] a-pulse" />
         <p className="text-[13px] text-[var(--mut)] mt-3">{networkNote || "Connecting to the room…"}</p>
-        <button className="btn ghost mt-5" onClick={() => router.push("/")}>Back</button>
+        <div className="flex gap-2 mt-5">
+          <button className="btn acc" onClick={() => {
+            announceRef.current?.();
+            if (sendJoinRef.current) sendJoinRef.current(true);
+            else window.location.reload();
+          }}>Reconnect</button>
+          <button className="btn ghost" onClick={() => router.push("/")}>Back</button>
+        </div>
       </Center>
     );
   }

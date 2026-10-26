@@ -20,6 +20,7 @@ import { useFluidScale } from "@/lib/useFluidScale";
 import { useDragScroll } from "@/lib/useDragScroll";
 import PlayerList from "@/components/PlayerList";
 import SidePanel from "@/components/SidePanel";
+import { orderTurnSeats } from "@/lib/game/turn-order";
 
 const LIGHT_SET: ColorName[] = ["red", "yellow", "green", "blue"];
 const DARK_SET: ColorName[] = ["pink", "teal", "orange", "purple"];
@@ -88,13 +89,8 @@ export default function Game({ code, view, meId, act, onLeave, unreadChat, onCha
   };
 
   const orderedPlayers = useMemo(() => {
-    const seated = view.players.filter((p) => !p.left);
-    if (view.direction === 1) return seated;
-    const me0 = seated.findIndex((p) => p.id === meId);
-    if (me0 < 0) return seated;
-    const out = [seated[me0]];
-    for (let i = 1; i < seated.length; i++) out.push(seated[(me0 - i + seated.length * 2) % seated.length]);
-    return out;
+    const current = view.players.find((p) => p.isTurn)?.id ?? meId;
+    return orderTurnSeats(view.players, view.direction, current);
   }, [view.players, view.direction, meId]);
 
   // Seats are shown a page at a time, three to a page. A short final page

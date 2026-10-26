@@ -8,6 +8,7 @@ import { GameCard, Face, Variant, ColorName, buildAllWildDeck, buildFlipDeck, bu
 import { dispatchGameCommand } from "../src/lib/game/dispatch";
 import { setHost, playableMoves } from "../src/lib/game/engine";
 import { pickHost, hostShouldChange, isBetterHost, isNewerState, PRESENCE_TTL_MS, type HostCandidate } from "../src/lib/host";
+import { orderTurnSeats } from "../src/lib/game/turn-order";
 
 let failures = 0;
 function ok(cond: boolean, msg: string) {
@@ -34,6 +35,21 @@ function rig(names: string[], variant: Variant, rules: Record<string, unknown> =
   s.turn = { playerIdx: 0, stage: "play" };
   s.turnStartedAt = Date.now();
   return s;
+}
+
+// ---------------- the displayed strip follows the same live turn order as the engine
+{
+  const seats = [
+    { id: "A", left: false, eliminated: false, spectator: false },
+    { id: "B", left: false, eliminated: false, spectator: true },
+    { id: "C", left: false, eliminated: true, spectator: false },
+    { id: "D", left: false, eliminated: false, spectator: false },
+    { id: "E", left: true, eliminated: false, spectator: false },
+  ];
+  ok(orderTurnSeats(seats, 1, "D").map((p) => p.id).join(",") === "D,A",
+    "turn strip: forward order starts at the active player and skips watchers, eliminated and left seats");
+  ok(orderTurnSeats(seats, -1, "A").map((p) => p.id).join(",") === "A,D",
+    "turn strip: reverse order follows the engine's reverse traversal");
 }
 
 // ---------------- deck sizes
