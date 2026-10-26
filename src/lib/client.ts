@@ -36,7 +36,13 @@ export interface PlayerView {
 
 export interface GameEventView {
   seq: number; type: string; msg: string; at: number; round: number;
-  card?: { color: string; value: string } | null;
+  card?: {
+    color: string; value: string;
+    // which side of a UNO Flip card this was, so the entry keeps its art
+    side?: Side;
+    // the printing a Flex card carries, so the entry keeps the player's face
+    flex?: { flexColor?: ColorName | null; flexValue?: FlexValue | null; flipIcon?: boolean } | null;
+  } | null;
   actor?: string;
 }
 

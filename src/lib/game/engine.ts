@@ -14,9 +14,17 @@ export interface GameEvent {
   msg: string;
   at: number;
   round: number;
-  card?: { color: string; value: string } | null;
+  // `side` is the side the card was sitting on when it hit the pile. In UNO
+  // Flip the two sides of one card are different cards, so the log has to keep
+  // it: reading `state.side` at render time would repaint every old entry the
+  // moment somebody flips the table.
+  // `flex` is the printing a Flex card carries (second colour / flex action /
+  // token icon) so the entry shows the same face the player had in hand.
+  card?: { color: string; value: string; side?: Side; flex?: CardPrint | null } | null;
   actor?: string;
 }
+
+export interface CardPrint { flexColor?: ColorName | null; flexValue?: FlexValue | null; flipIcon?: boolean }
 
 export interface ChatMessage {
   id: number;
@@ -175,13 +183,23 @@ const SILENT_EVENTS = new Set<string>([]);
 
 export function log(
   s: RoomState, type: string, msg: string,
-  extra?: { card?: Face | null; actor?: string },
+  extra?: { card?: Face | null; actor?: string; side?: Side; flex?: CardPrint | null },
 ) {
   if (SILENT_EVENTS.has(type)) return;
   s.seq += 1;
   s.events.push({
     seq: s.seq, type, msg, at: now(), round: s.round,
-    card: extra?.card ? { color: extra.card.color, value: extra.card.value } : null,
+    // the side is frozen here, at log time, so an entry never changes its
+    // art later. Callers that move `s.side` before logging (the Flip card)
+    // pass the side they played from.
+    card: extra?.card
+      ? {
+          color: extra.card.color,
+          value: extra.card.value,
+          side: extra.side ?? s.side,
+          flex: extra.flex ?? null,
+        }
+      : null,
     actor: extra?.actor,
   });
   if (s.events.length > 400) s.events = s.events.slice(-400);
@@ -273,6 +291,15 @@ function labelOf(s: RoomState, f: Face): string {
 
 function face(s: RoomState, c: GameCard): Face {
   return activeFace(s.side, c);
+}
+
+// The printing a Flex card carries - second colour, flex action, token icon.
+// The log stores it alongside the face so an entry can be drawn the way the
+// player saw the card instead of as a bare number.
+function printOf(s: RoomState, c: GameCard): CardPrint | null {
+  return s.variant === "flex"
+    ? { flexColor: c.flexColor ?? null, flexValue: c.flexValue ?? null, flipIcon: !!c.flipIcon }
+    : null;
 }
 
 function topDiscard(s: RoomState): GameCard | undefined {
@@ -457,7 +484,8 @@ export function startRound(s: RoomState) {
   s.turn = { playerIdx: nextIdx(s, s.dealerIdx % s.players.length, 1), stage: "play" };
   s.turnStartedAt = now();
   s.phase = "playing";
-  log(s, "deal", `Round ${s.round} dealt.`);
+  // show the card the round opens on, so the first log line and the pile agree
+  log(s, "deal", `Round ${s.round} dealt. It starts on ${labelOf(s, face(s, starter))}.`, { card: face(s, starter), flex: printOf(s, starter) });
   touch(s);
 }
 
@@ -588,6 +616,21 @@ export function actPlay(s: RoomState, playerId: string, cardId: string, opts: Pl
   if (!card) return "Card not in hand";
   const f = face(s, card);
 
+  const cardFlex = printOf(s, card);
+  const effValue: FaceValue | FlexValue = opts.useFlex && card.flexValue ? card.flexValue : f.value;
+
+  // A failed action must not eat the card. Validate chosen targets before any
+  // discard, turn, or UNO-window state changes.
+  if (effValue === "targetDraw2" || effValue === "targetDraw4" ||
+      effValue === "wildTargetDraw2" || effValue === "wildSwap") {
+    const t = findPlayer(s, opts.targetId ?? "");
+    if (!t || t.id === p.id || t.left || t.eliminated) {
+      if (effValue === "wildSwap") return "Pick a player to swap with";
+      if (effValue === "wildTargetDraw2") return "Pick a target";
+      return "Pick a valid target";
+    }
+  }
+
   // jump in
   let jumped = false;
   if (s.turn.playerIdx !== myIdx) {
@@ -595,14 +638,12 @@ export function actPlay(s: RoomState, playerId: string, cardId: string, opts: Pl
     const tf = top ? face(s, top) : null;
     if (s.rules.jumpIn && tf && !isWildFace(f) && f.color === tf.color && f.value === tf.value && s.pendingDraw === 0) {
       jumped = true;
-      s.turn = { playerIdx: myIdx, stage: "play" };
-      log(s, "jump", `${p.name} jumped in with ${labelOf(s, f)}.`, { card: f, actor: p.name });
     } else {
       return "Not your turn";
     }
   }
 
-  if (s.turn.stage === "drewCard") {
+  if (!jumped && s.turn.stage === "drewCard") {
     // Drawing opens the hand back up: anything that matches the pile is legal
     // again, including the card that was sitting there before the draw. With
     // forced play on, the card that came off the pile still has to go down.
@@ -611,7 +652,7 @@ export function actPlay(s: RoomState, playerId: string, cardId: string, opts: Pl
       return "Forced play: play the card you drew";
     }
   }
-  if (s.turn.stage === "double") {
+  if (!jumped && s.turn.stage === "double") {
     const okColor = !isWildFace(f) && f.color === s.turn.doubleColor;
     const okValue = f.value === s.turn.doubleValue;
     if (!okColor && !okValue) return "Second card must match color or value";
@@ -628,6 +669,12 @@ export function actPlay(s: RoomState, playerId: string, cardId: string, opts: Pl
   const chosen: ColorName | undefined = opts.color;
   if (needsColor && (!chosen || !(colorChoices as readonly string[]).includes(chosen))) return "Choose a color";
 
+  // Commit a jump only after every input check has passed. Invalid color or
+  // target choices must leave the active turn and the caller's hand untouched.
+  if (jumped) {
+    s.turn = { playerIdx: myIdx, stage: "play" };
+    log(s, "jump", `${p.name} jumped in with ${labelOf(s, f)}.`, { card: f, actor: p.name, flex: cardFlex });
+  }
   clearUnoRaceFor(s, p);
 
   // -------- stacking path
@@ -643,7 +690,7 @@ export function actPlay(s: RoomState, playerId: string, cardId: string, opts: Pl
       // comes back as - leaving the old one would hold everyone to it
       if (chosen) s.currentColor = chosen;
       else if (!isWildFace(f)) s.currentColor = f.color;
-      log(s, "reverse", `${p.name} reflected the +${s.pendingDraw} back.`, { card: f, actor: p.name });
+      log(s, "reverse", `${p.name} reflected the +${s.pendingDraw} back.`, { card: f, actor: p.name, flex: cardFlex });
     } else {
       const val = drawStrength(f.value);
       s.pendingDraw += val;
@@ -653,7 +700,7 @@ export function actPlay(s: RoomState, playerId: string, cardId: string, opts: Pl
       // table would still be answering the colour the stack opened on
       if (chosen) s.currentColor = chosen;
       else if (!isWildFace(f)) s.currentColor = f.color;
-      log(s, "stack", `${p.name} stacked ${labelOf(s, f)}. Stack is now ${s.pendingDraw}.`, { card: f, actor: p.name });
+      log(s, "stack", `${p.name} stacked ${labelOf(s, f)}. Stack is now ${s.pendingDraw}.`, { card: f, actor: p.name, flex: cardFlex });
     }
     afterHandChange(s, p);
     if (s.phase === "playing") advanceTurn(s, 1);
@@ -663,7 +710,6 @@ export function actPlay(s: RoomState, playerId: string, cardId: string, opts: Pl
   p.hand = p.hand.filter((c) => c.id !== cardId);
 
   let extras: GameCard[] = [];
-  const effValue: FaceValue | FlexValue = useFlex && card.flexValue ? card.flexValue : f.value;
   const effColor: ColorName = f.color;
 
   if (effValue === "discardAll") {
@@ -687,36 +733,36 @@ export function actPlay(s: RoomState, playerId: string, cardId: string, opts: Pl
         const t = target();
         if (t && t.id !== p.id && !t.left && !t.eliminated) {
           s.skipOnce.push(t.id);
-          log(s, "skip", `${p.name} played ${labelOf(s, f)} aimed at ${t.name}.`, { card: f, actor: p.name });
+          log(s, "skip", `${p.name} played ${labelOf(s, f)} aimed at ${t.name}.`, { card: f, actor: p.name, flex: cardFlex });
           advance = 1;
           break;
         }
       }
       advance = 2;
-      log(s, "skip", `${p.name} played ${labelOf(s, f)}. Next player is skipped.`, { card: f, actor: p.name });
+      log(s, "skip", `${p.name} played ${labelOf(s, f)}. Next player is skipped.`, { card: f, actor: p.name, flex: cardFlex });
       break;
     }
     case "wildSkipTwo":
       advance = 3;
-      log(s, "skip", `${p.name} played ${labelOf(s, f)}. Two players are skipped.`, { card: f, actor: p.name });
+      log(s, "skip", `${p.name} played ${labelOf(s, f)}. Two players are skipped.`, { card: f, actor: p.name, flex: cardFlex });
       break;
     case "skipEveryone":
       advance = 0;
-      log(s, "skip", `${p.name} played ${labelOf(s, f)}. Everyone is skipped.`, { card: f, actor: p.name });
+      log(s, "skip", `${p.name} played ${labelOf(s, f)}. Everyone is skipped.`, { card: f, actor: p.name, flex: cardFlex });
       break;
     case "reverse":
     case "wildReverse": {
       const alive = activePlayers(s).length;
-      if (alive === 2) { advance = 2; log(s, "skip", `${p.name} played ${labelOf(s, f)}, which skips in a two player game.`, { card: f, actor: p.name }); break; }
+      if (alive === 2) { advance = 2; log(s, "skip", `${p.name} played ${labelOf(s, f)}, which skips in a two player game.`, { card: f, actor: p.name, flex: cardFlex }); break; }
       s.direction = (s.direction * -1) as 1 | -1;
       advance = 1;
-      log(s, "reverse", `${p.name} played ${labelOf(s, f)}. Order is reversed.`, { card: f, actor: p.name });
+      log(s, "reverse", `${p.name} played ${labelOf(s, f)}. Order is reversed.`, { card: f, actor: p.name, flex: cardFlex });
       break;
     }
     case "reverseSkip": {
       s.direction = (s.direction * -1) as 1 | -1;
       advance = 2;
-      log(s, "reverse", `${p.name} flexed ${labelOf(s, f)} into Reverse Skip.`, { card: f, actor: p.name });
+      log(s, "reverse", `${p.name} flexed ${labelOf(s, f)} into Reverse Skip.`, { card: f, actor: p.name, flex: cardFlex });
       break;
     }
     case "allDraw1": {
@@ -724,7 +770,7 @@ export function actPlay(s: RoomState, playerId: string, cardId: string, opts: Pl
         if (q.id === p.id || q.left || q.eliminated) continue;
         drawToHand(s, q, 1, discardDraw);
       }
-      log(s, "draw", `${p.name} flexed ${labelOf(s, f)}. Everyone else drew 1.`, { card: f, actor: p.name });
+      log(s, "draw", `${p.name} flexed ${labelOf(s, f)}. Everyone else drew 1.`, { card: f, actor: p.name, flex: cardFlex });
       break;
     }
     case "allDraw2": {
@@ -733,7 +779,7 @@ export function actPlay(s: RoomState, playerId: string, cardId: string, opts: Pl
         if (q.id === p.id || q.left || q.eliminated) continue;
         drawToHand(s, q, 2, discardDraw);
       }
-      log(s, "draw", `${p.name} flexed ${labelOf(s, f)}. Everyone else drew 2.`, { card: f, actor: p.name });
+      log(s, "draw", `${p.name} flexed ${labelOf(s, f)}. Everyone else drew 2.`, { card: f, actor: p.name, flex: cardFlex });
       break;
     }
     case "targetDraw2": case "targetDraw4": {
@@ -741,7 +787,7 @@ export function actPlay(s: RoomState, playerId: string, cardId: string, opts: Pl
         const t = target();
         if (t && t.id !== p.id) {
           const tmp = p.powerGreen; p.powerGreen = t.powerGreen; t.powerGreen = tmp;
-          log(s, "flex", `${p.name} swapped power tokens with ${t.name}.`, { card: f, actor: p.name });
+          log(s, "flex", `${p.name} swapped power tokens with ${t.name}.`, { card: f, actor: p.name, flex: cardFlex });
           break;
         }
       }
@@ -749,20 +795,20 @@ export function actPlay(s: RoomState, playerId: string, cardId: string, opts: Pl
       const t = target();
       if (!t || t.id === p.id || t.left || t.eliminated) return "Pick a valid target";
       drawToHand(s, t, effValue === "targetDraw2" ? 2 : 4, discardDraw);
-      log(s, "draw", `${p.name} played ${labelOf(s, f)} at ${t.name} for ${effValue === "targetDraw2" ? 2 : 4}.`, { card: f, actor: p.name });
+      log(s, "draw", `${p.name} played ${labelOf(s, f)} at ${t.name} for ${effValue === "targetDraw2" ? 2 : 4}.`, { card: f, actor: p.name, flex: cardFlex });
       break;
     }
     case "wildTargetDraw2": {
       const t = target();
       if (!t || t.id === p.id || t.left || t.eliminated) return "Pick a target";
       drawToHand(s, t, 2, discardDraw);
-      log(s, "draw", `${p.name} played ${labelOf(s, f)} at ${t.name} for 2.`, { card: f, actor: p.name });
+      log(s, "draw", `${p.name} played ${labelOf(s, f)} at ${t.name} for 2.`, { card: f, actor: p.name, flex: cardFlex });
       if (s.rules.wildChain) {
         for (const q of s.players) {
           if (q.id === p.id || q.id === t.id || q.left || q.eliminated) continue;
           drawToHand(s, q, 1, discardDraw);
         }
-        log(s, "draw", "Chain reaction: everyone else draws 1.");
+        log(s, "draw", "Chain reaction: everyone else draws 1.", { card: f, actor: p.name, flex: cardFlex });
       }
       break;
     }
@@ -772,14 +818,14 @@ export function actPlay(s: RoomState, playerId: string, cardId: string, opts: Pl
       const tmp = p.hand; p.hand = t.hand; t.hand = tmp;
       s.unoRace = null;
       p.calledUno = false; t.calledUno = false;
-      log(s, "swap", `${p.name} played ${labelOf(s, f)} and swapped hands with ${t.name}.`, { card: f, actor: p.name });
+      log(s, "swap", `${p.name} played ${labelOf(s, f)} and swapped hands with ${t.name}.`, { card: f, actor: p.name, flex: cardFlex });
       if (s.rules.wildMayhem) {
         for (const q of s.players) {
           if (q.id === p.id || q.left || q.eliminated || q.hand.length === 0) continue;
           const idx = Math.floor(Math.random() * q.hand.length);
           s.discardPile.splice(s.discardPile.length - 1, 0, q.hand.splice(idx, 1)[0]);
         }
-        log(s, "swap", "Hand dump: everyone else discards a card.");
+        log(s, "swap", "Hand dump: everyone else discards a card.", { card: f, actor: p.name, flex: cardFlex });
         for (const q of s.players) {
           if (q.id === p.id || q.left || q.eliminated || s.phase !== "playing") continue;
           afterHandChange(s, q);
@@ -792,23 +838,23 @@ export function actPlay(s: RoomState, playerId: string, cardId: string, opts: Pl
       if (stackingOn(s)) {
         s.pendingDraw += drawStrength(f.value);
         s.stackValue = drawStrength(f.value);
-        log(s, "stack", `${p.name} played ${labelOf(s, f)} and opened a stack at ${s.pendingDraw}.`, { card: f, actor: p.name });
+        log(s, "stack", `${p.name} played ${labelOf(s, f)} and opened a stack at ${s.pendingDraw}.`, { card: f, actor: p.name, flex: cardFlex });
       } else {
         const v = s.players[nextIdx(s, myIdx, 1)];
         drawToHand(s, v, drawStrength(f.value), discardDraw);
-        log(s, "draw", `${p.name} played ${labelOf(s, f)}. ${v.name} drew ${drawStrength(f.value)} and lost the turn.`, { card: f, actor: p.name });
+        log(s, "draw", `${p.name} played ${labelOf(s, f)}. ${v.name} drew ${drawStrength(f.value)} and lost the turn.`, { card: f, actor: p.name, flex: cardFlex });
         advance = 2;
       }
       break;
     }
     case "wild":
       if (chosen) s.currentColor = chosen;
-      log(s, "wild", s.variant === "allwild" ? `${p.name} played a Wild.` : `${p.name} played a Wild and called ${chosen}.`, { card: f, actor: p.name });
+      log(s, "wild", s.variant === "allwild" ? `${p.name} played a Wild.` : `${p.name} played a Wild and called ${chosen}.`, { card: f, actor: p.name, flex: cardFlex });
       break;
     case "wildAllFlip": {
       if (chosen) s.currentColor = chosen;
       for (const q of s.players) if (!q.left) q.powerGreen = !q.powerGreen;
-      log(s, "flip", `${p.name} played Wild All Flip. Every power token flipped.`, { card: f, actor: p.name });
+      log(s, "flip", `${p.name} played Wild All Flip. Every power token flipped.`, { card: f, actor: p.name, flex: cardFlex });
       maybeResetTokens(s);
       break;
     }
@@ -816,11 +862,11 @@ export function actPlay(s: RoomState, playerId: string, cardId: string, opts: Pl
       if (chosen) s.currentColor = chosen;
       if (stackingOn(s)) {
         s.pendingDraw += 2; s.stackValue = 2;
-        log(s, "stack", `${p.name} played ${labelOf(s, f)} and opened a stack at ${s.pendingDraw}.`, { card: f, actor: p.name });
+        log(s, "stack", `${p.name} played ${labelOf(s, f)} and opened a stack at ${s.pendingDraw}.`, { card: f, actor: p.name, flex: cardFlex });
       } else {
         const v = s.players[nextIdx(s, myIdx, 1)];
         drawToHand(s, v, 2, discardDraw);
-        log(s, "draw", `${p.name} played ${labelOf(s, f)}. ${v.name} drew 2 and lost the turn.`, { card: f, actor: p.name });
+        log(s, "draw", `${p.name} played ${labelOf(s, f)}. ${v.name} drew 2 and lost the turn.`, { card: f, actor: p.name, flex: cardFlex });
         advance = 2;
       }
       break;
@@ -833,7 +879,7 @@ export function actPlay(s: RoomState, playerId: string, cardId: string, opts: Pl
         const hadColor = p.hand.some((c) => !isWildFace(face(s, c)) && face(s, c).color === prevColor);
         s.challenge = { targetId: v.id, byId: p.id, legal: !hadColor };
         s.turn = { playerIdx: myIdx, stage: "play" };
-        log(s, "wild", `${p.name} played Wild Draw 4 on ${v.name} and called ${chosen}.`, { card: f, actor: p.name });
+        log(s, "wild", `${p.name} played Wild Draw 4 on ${v.name} and called ${chosen}.`, { card: f, actor: p.name, flex: cardFlex });
         afterHandChange(s, p);
         checkLastStanding(s);
         touch(s);
@@ -841,11 +887,11 @@ export function actPlay(s: RoomState, playerId: string, cardId: string, opts: Pl
       }
       if (stackingOn(s)) {
         s.pendingDraw += 4; s.stackValue = 4;
-        log(s, "stack", `${p.name} played ${labelOf(s, f)} and opened a stack at ${s.pendingDraw}.`, { card: f, actor: p.name });
+        log(s, "stack", `${p.name} played ${labelOf(s, f)} and opened a stack at ${s.pendingDraw}.`, { card: f, actor: p.name, flex: cardFlex });
       } else {
         const v = s.players[nextIdx(s, myIdx, 1)];
         drawToHand(s, v, 4, discardDraw);
-        log(s, "draw", `${p.name} played ${labelOf(s, f)}. ${v.name} drew 4 and lost the turn.`, { card: f, actor: p.name });
+        log(s, "draw", `${p.name} played ${labelOf(s, f)}. ${v.name} drew 4 and lost the turn.`, { card: f, actor: p.name, flex: cardFlex });
         advance = 2;
       }
       break;
@@ -854,7 +900,7 @@ export function actPlay(s: RoomState, playerId: string, cardId: string, opts: Pl
       if (chosen) s.currentColor = chosen;
       s.pendingDraw += drawStrength(f.value);
       s.stackValue = drawStrength(f.value);
-      log(s, "stack", `${p.name} played ${labelOf(s, f)} and opened a stack at ${s.pendingDraw}.`, { card: f, actor: p.name });
+      log(s, "stack", `${p.name} played ${labelOf(s, f)} and opened a stack at ${s.pendingDraw}.`, { card: f, actor: p.name, flex: cardFlex });
       break;
     }
     case "wildReverseDraw4": {
@@ -862,7 +908,7 @@ export function actPlay(s: RoomState, playerId: string, cardId: string, opts: Pl
       s.direction = (s.direction * -1) as 1 | -1;
       s.pendingDraw += 4;
       s.stackValue = 4;
-      log(s, "stack", `${p.name} played ${labelOf(s, f)}. Order reversed, stack at ${s.pendingDraw}.`, { card: f, actor: p.name });
+      log(s, "stack", `${p.name} played ${labelOf(s, f)}. Order reversed, stack at ${s.pendingDraw}.`, { card: f, actor: p.name, flex: cardFlex });
       break;
     }
     case "wildColorRoulette": case "wildDrawColor": {
@@ -890,18 +936,20 @@ export function actPlay(s: RoomState, playerId: string, cardId: string, opts: Pl
       log(s, "roulette", named
         ? `${p.name} played ${labelOf(s, f)} and called ${named}. ${v.name} pulls one card at a time until ${named} turns up.`
         : `${p.name} played ${labelOf(s, f)}. ${v.name} names a color, then pulls one card at a time until it turns up.`,
-        { card: f, actor: p.name });
+        { card: f, actor: p.name, flex: cardFlex });
       break;
     }
     case "flip": {
+      // the card was played off the side the table was on a moment ago
+      const fromSide = s.side;
       s.side = s.side === "light" ? "dark" : "light";
       s.discardPile.reverse();
       s.drawPile.reverse();
       const newTop = topDiscard(s);
-      log(s, "flip", `${p.name} played Flip. The table turned to the ${s.side} side.`, { card: f, actor: p.name });
+      log(s, "flip", `${p.name} played Flip. The table turned to the ${s.side} side.`, { card: f, actor: p.name, side: fromSide, flex: cardFlex });
       if (s.rules.chaosFlip) {
         rotateHands(s);
-        log(s, "swap", "Chaos flip: every hand passes one seat.");
+        log(s, "swap", "Chaos flip: every hand passes one seat.", { card: f, actor: p.name, side: fromSide, flex: cardFlex });
       }
       if (newTop && isWildFace(face(s, newTop))) {
         s.flipColorChoice = { playerId: p.id };
@@ -914,13 +962,13 @@ export function actPlay(s: RoomState, playerId: string, cardId: string, opts: Pl
       break;
     }
     case "discardAll":
-      log(s, "play", `${p.name} played ${labelOf(s, f)} and dumped ${extras.length} extra ${effColor} card${extras.length === 1 ? "" : "s"}.`, { card: f, actor: p.name });
+      log(s, "play", `${p.name} played ${labelOf(s, f)} and dumped ${extras.length} extra ${effColor} card${extras.length === 1 ? "" : "s"}.`, { card: f, actor: p.name, flex: cardFlex });
       s.currentColor = effColor;
       break;
     default: {
       if (isNumberValue(f.value)) {
         s.currentColor = effColor;
-        log(s, "play", `${p.name} played ${labelOf(s, f)}.`, { card: f, actor: p.name });
+        log(s, "play", `${p.name} played ${labelOf(s, f)}.`, { card: f, actor: p.name, flex: cardFlex });
         if (s.variant === "nomercy") {
           if (f.value === "7") {
             let t = target();
@@ -934,12 +982,12 @@ export function actPlay(s: RoomState, playerId: string, cardId: string, opts: Pl
               const tmp = p.hand; p.hand = t.hand; t.hand = tmp;
               s.unoRace = null;
               p.calledUno = false; t.calledUno = false;
-              log(s, "swap", `${p.name} swapped hands with ${t.name}.`, { card: f, actor: p.name });
+              log(s, "swap", `${p.name} swapped hands with ${t.name}.`, { card: f, actor: p.name, flex: cardFlex });
               afterHandChange(s, t);
             }
           } else if (f.value === "0") {
             rotateHands(s);
-            log(s, "swap", "Every hand rotates one seat.");
+            log(s, "swap", "Every hand rotates one seat.", { card: f, actor: p.name, flex: cardFlex });
           }
         }
       }
@@ -953,14 +1001,14 @@ export function actPlay(s: RoomState, playerId: string, cardId: string, opts: Pl
   if (s.variant === "flex") {
     if (wasFlipIcon) {
       p.powerGreen = !p.powerGreen;
-      log(s, "flex", `${p.name} flips their token ${p.powerGreen ? "on" : "off"}.`);
+      log(s, "flex", `${p.name} flips their token ${p.powerGreen ? "on" : "off"}.`, { card: f, actor: p.name, flex: cardFlex });
     }
     if (useFlex) {
       p.powerGreen = false;
-      log(s, "flex", `${p.name} spends their power token.`);
+      log(s, "flex", `${p.name} spends their power token.`, { card: f, actor: p.name, flex: cardFlex });
       if (s.rules.powerFlipping) {
         for (const q of s.players) if (q.id !== p.id && !q.left) q.powerGreen = false;
-        log(s, "flex", "Power flipping: every other token goes red.");
+        log(s, "flex", "Power flipping: every other token goes red.", { card: f, actor: p.name, flex: cardFlex });
       }
     }
     if (wasFlipIcon || useFlex) maybeResetTokens(s);
@@ -969,7 +1017,7 @@ export function actPlay(s: RoomState, playerId: string, cardId: string, opts: Pl
   // no win on action
   if (p.hand.length === 0 && s.rules.noWinOnAction && isActionValue(f.value)) {
     drawToHand(s, p, 1);
-    log(s, "play", `${p.name} cannot go out on an action card and draws 1.`);
+    log(s, "play", `${p.name} cannot go out on an action card and draws 1.`, { card: f, actor: p.name, flex: cardFlex });
   }
 
   afterHandChange(s, p);
@@ -1154,9 +1202,14 @@ export function actChallenge(s: RoomState, playerId: string, doChallenge: boolea
   const by = findPlayer(s, ch.byId)!;
   const tIdx = idxOf(s, target.id);
   const fromDiscard = s.rules.discardRoulette;
+  const played = topDiscard(s);
+  const playedFace = played ? face(s, played) : null;
+  const playedFlex = played ? printOf(s, played) : null;
   if (!doChallenge) {
     drawToHand(s, target, 4, fromDiscard);
-    log(s, "draw", `${target.name} accepted the Draw 4 and drew 4.`, { actor: target.name });
+    log(s, "draw", `${target.name} accepted the Draw 4 and drew 4.`, {
+      actor: target.name, card: playedFace, flex: playedFlex,
+    });
     s.challenge = null;
     checkLastStanding(s);
     if (s.phase === "playing") { s.turn.playerIdx = tIdx; advanceTurn(s, 1); }
@@ -1165,10 +1218,14 @@ export function actChallenge(s: RoomState, playerId: string, doChallenge: boolea
   s.challenge = null;
   if (ch.legal) {
     drawToHand(s, target, 6, fromDiscard);
-    log(s, "challenge", `${target.name} challenged. The Draw 4 was clean, so ${target.name} drew 6.`, { actor: target.name });
+    log(s, "challenge", `${target.name} challenged. The Draw 4 was clean, so ${target.name} drew 6.`, {
+      actor: target.name, card: playedFace, flex: playedFlex,
+    });
   } else {
     drawToHand(s, by, 4, fromDiscard);
-    log(s, "challenge", `${target.name} challenged. ${by.name} was bluffing and drew 4.`, { actor: target.name });
+    log(s, "challenge", `${target.name} challenged. ${by.name} was bluffing and drew 4.`, {
+      actor: target.name, card: playedFace, flex: playedFlex,
+    });
   }
   checkLastStanding(s);
   if (s.phase === "playing") { s.turn.playerIdx = tIdx; advanceTurn(s, 1); }
@@ -1182,8 +1239,13 @@ export function actChooseColor(s: RoomState, playerId: string, color: ColorName)
   if (!(choices as readonly string[]).includes(color)) return "Bad color";
   s.currentColor = color;
   const p = findPlayer(s, playerId)!;
+  const played = topDiscard(s);
   s.flipColorChoice = null;
-  log(s, "wild", `${p.name} calls ${color}.`);
+  log(s, "wild", `${p.name} calls ${color}.`, {
+    card: played ? face(s, played) : null,
+    actor: p.name,
+    flex: played ? printOf(s, played) : null,
+  });
   advanceTurn(s, 1);
   return null;
 }
@@ -1203,7 +1265,12 @@ export function actRouletteColor(s: RoomState, playerId: string, color: ColorNam
 
   r.color = color;
   s.currentColor = color;
-  log(s, "wild", `${chooser.name} calls ${color}.`);
+  const played = topDiscard(s);
+  log(s, "wild", `${chooser.name} calls ${color}.`, {
+    card: played ? face(s, played) : null,
+    actor: chooser.name,
+    flex: played ? printOf(s, played) : null,
+  });
 
   const puller = findPlayer(s, r.pullerId);
   if (!puller || puller.left || puller.eliminated) { finishRoulette(s); return null; }
@@ -1226,7 +1293,12 @@ export function actRoulettePull(s: RoomState, playerId: string): string | null {
   clearUnoRaceFor(s, p);
   const got = takeCards(s, 1, s.rules.discardRoulette);
   if (got.length === 0) {
-    log(s, "roulette", `The pile is empty. ${p.name} keeps ${r.drawn.length} card${r.drawn.length === 1 ? "" : "s"} and play moves on.`);
+    const trigger = topDiscard(s);
+    log(s, "roulette", `The pile is empty. ${p.name} keeps ${r.drawn.length} card${r.drawn.length === 1 ? "" : "s"} and play moves on.`, {
+      card: trigger ? face(s, trigger) : null,
+      actor: p.name,
+      flex: trigger ? printOf(s, trigger) : null,
+    });
     finishRoulette(s);
     return null;
   }
@@ -1237,7 +1309,7 @@ export function actRoulettePull(s: RoomState, playerId: string): string | null {
   if (p.hand.length > 1) p.calledUno = false;
   const cf = face(s, card);
   const hit = !isWildFace(cf) && cf.color === r.color;
-  log(s, "draw", `${p.name} pulls ${labelOf(s, cf)}.`, { card: cf, actor: p.name });
+  log(s, "draw", `${p.name} pulls ${labelOf(s, cf)}.`, { card: cf, actor: p.name, flex: printOf(s, card) });
   checkMercy(s, p);
   checkMercy10(s, p);
 
@@ -1245,10 +1317,12 @@ export function actRoulettePull(s: RoomState, playerId: string): string | null {
   s.turnStartedAt = now();
   if (hit) {
     r.doneAt = now();
-    log(s, "roulette", `${p.name} hit ${r.color} after ${r.drawn.length} card${r.drawn.length === 1 ? "" : "s"}.`, { card: cf, actor: p.name });
+    log(s, "roulette", `${p.name} hit ${r.color} after ${r.drawn.length} card${r.drawn.length === 1 ? "" : "s"}.`, { card: cf, actor: p.name, flex: printOf(s, card) });
   } else if (p.eliminated || p.left) {
     r.doneAt = now();
-    log(s, "roulette", `${p.name} is out of the round after ${r.drawn.length} card${r.drawn.length === 1 ? "" : "s"}.`);
+    log(s, "roulette", `${p.name} is out of the round after ${r.drawn.length} card${r.drawn.length === 1 ? "" : "s"}.`, {
+      card: cf, actor: p.name, flex: printOf(s, card),
+    });
   }
   checkLastStanding(s);
   touch(s);

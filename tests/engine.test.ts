@@ -193,6 +193,52 @@ ok(buildAllWildDeck().every((c) => c.light.color === "wild"), "every all wild ca
   ok(b.hand.length === 1 && c.hand.length === 1, "hands were passed along");
 }
 
+// ---------------- event cards keep the face and side that were actually played
+{
+  const s = rig(["A", "B", "C"], "flip");
+  const a = s.players[0], b = s.players[1];
+  const below = mk({ color: "yellow", value: "3" }, { dark: { color: "purple", value: "8" } });
+  const top = mk({ color: "red", value: "5" }, { dark: { color: "pink", value: "2" } });
+  const fl = mk({ color: "red", value: "flip" }, { dark: { color: "pink", value: "flip" } });
+  s.discardPile = [below, top];
+  a.hand = [fl, mk({ color: "green", value: "1" }, { dark: { color: "blue", value: "7" } })];
+  b.hand = [mk({ color: "blue", value: "4" }, { dark: { color: "purple", value: "8" } })];
+  ok(actPlay(s, a.id, fl.id, {}) === null, "flip log: Flip plays");
+  const flipEvent = s.events[s.events.length - 1];
+  ok(flipEvent.type === "flip" && flipEvent.card?.side === "light" &&
+    flipEvent.card.color === "red" && flipEvent.card.value === "flip",
+    "flip log: keeps the light-side Flip face after the table turns dark");
+  const dark = b.hand[0];
+  ok(actPlay(s, b.id, dark.id, {}) === null, "flip log: dark-side card plays");
+  const darkEvent = [...s.events].reverse().find((e) => e.card);
+  ok(darkEvent?.card?.side === "dark" && darkEvent.card.color === "purple" && darkEvent.card.value === "8",
+    "flip log: next entry keeps the exact dark-side face");
+}
+
+// ---------------- invalid targeted plays must not consume the card or turn
+{
+  const s = rig(["A", "B"], "allwild");
+  const a = s.players[0];
+  const swap = mk({ color: "wild", value: "wildSwap" });
+  a.hand = [swap];
+  const discardCount = s.discardPile.length;
+  ok(actPlay(s, a.id, swap.id, {}) === "Pick a player to swap with",
+    "target validation: missing target is rejected");
+  ok(a.hand[0]?.id === swap.id && s.discardPile.length === discardCount && s.turn.playerIdx === 0,
+    "target validation: rejected play leaves the card, pile and turn unchanged");
+}
+
+// ---------------- flex card logs retain the printing carried by the played card
+{
+  const s = rig(["A", "B"], "flex");
+  const a = s.players[0];
+  const flexCard = mk({ color: "red", value: "5" }, { flexColor: "blue" });
+  a.hand = [flexCard];
+  ok(actPlay(s, a.id, flexCard.id, {}) === null, "flex log: the card plays");
+  const event = [...s.events].reverse().find((e) => e.card);
+  ok(event?.card?.flex?.flexColor === "blue", "flex log: records the card's second colour");
+}
+
 // ---------------- calling it on the way down is what protects you
 {
   const s = rig(["A", "B"], "classic");

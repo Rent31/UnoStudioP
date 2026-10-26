@@ -27,6 +27,7 @@ export default function SidePanel({ view, meId, act, onClose, title = "Table log
   const entries = view.logTail ?? [];
   const chat = view.chat ?? [];
   const isFlex = view.variant === "flex";
+  const isFlip = view.variant === "flip";
 
   // stick to the bottom only when new items arrive
   useEffect(() => {
@@ -48,8 +49,6 @@ export default function SidePanel({ view, meId, act, onClose, title = "Table log
     act("chat", { text: t });
   };
 
-  let lastRound = -1;
-
   return (
     <aside className="sidepanel bottom-0 panel border-l a-left" style={{ top: inset }}>
       <div className="flex items-center justify-between px-3 h-11 border-b border-[var(--line)] shrink-0">
@@ -63,10 +62,12 @@ export default function SidePanel({ view, meId, act, onClose, title = "Table log
       {/* log */}
       <div ref={logRef} className="flex-1 min-h-0 overflow-y-auto px-3 py-2.5 space-y-1.5">
         {entries.length === 0 && <p className="text-[12px] text-[var(--mut)]">Nothing yet.</p>}
-        {entries.map((e) => {
-          const showRound = e.round > 0 && e.round !== lastRound;
-          lastRound = e.round;
+        {entries.map((e, index) => {
+          const showRound = e.round > 0 && (index === 0 || entries[index - 1]?.round !== e.round);
           const face = e.card ? ({ color: e.card.color, value: e.card.value } as unknown as Face) : null;
+          // an entry written before this change has no side; for UNO Flip it can
+          // only have come from the light side, which is where a round starts
+          const side = e.card?.side ?? "light";
           return (
             <div key={e.seq}>
               {showRound && (
@@ -75,9 +76,16 @@ export default function SidePanel({ view, meId, act, onClose, title = "Table log
               <div className="flex items-start gap-2">
                 {face ? (
                   <span className="cardwrap pointer-events-none shrink-0 mt-0.5" style={{ "--k": 0.14 } as never}>
-                    {/* the stored face is already the side that was up when
-                        the card was played, so a flip must not recolour it */}
-                    <CardView face={face} useFlexArt={isFlex} />
+                    {/* the entry carries the side it was played on, so it keeps
+                        the flip art it had at the time instead of being
+                        repainted by whatever side the table is on now */}
+                    <CardView
+                      face={face}
+                      useFlexArt={isFlex}
+                      flex={isFlex ? e.card?.flex ?? null : null}
+                      flipLight={isFlip && side === "light"}
+                      flipDark={isFlip && side === "dark"}
+                    />
                   </span>
                 ) : (
                   <span className="w-[17px] shrink-0" />
