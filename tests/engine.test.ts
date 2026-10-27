@@ -2,7 +2,7 @@ import {
   addPlayer, actPlay, actDraw, actPass, actUno, actChallenge,
   tick, actChooseColor, actEndDouble, actReorder, actShuffleSeats, actChat, actSetChat, actClearChat, startRound, buildView, createRoomState, addPlayer as _addP, RoomState,
   actRouletteColor, actRoulettePull, actRouletteFinish, ROULETTE_HOLD_MS,
-  actSetSpectate, actStart,
+  actSetSpectate, actSetAdmin, actStart,
 } from "../src/lib/game/engine";
 import { GameCard, Face, Variant, ColorName, buildAllWildDeck, buildFlipDeck, buildFlexDeck } from "../src/lib/game/model";
 import { dispatchGameCommand } from "../src/lib/game/dispatch";
@@ -631,17 +631,31 @@ ok(buildAllWildDeck().every((c) => c.light.color === "wild"), "every all wild ca
   const s = createRoomState("classic");
   const owner = addPlayer(s, "A", false);
   const second = addPlayer(s, "B", false);
+  const third = addPlayer(s, "C", false);
   ok(owner.isOwner && owner.isAdmin, "host: the opener is owner and admin");
   ok(second.joinedAt >= owner.joinedAt, "host: join order follows the seats");
 
   setHost(s, second.id);
   ok(s.hostId === second.id, "host: another browser can run the room");
-  ok(second.isAdmin === true, "host: a stand-in host gets admin powers");
+  ok(second.isAdmin === true && second.temporaryHostAdmin === true, "host: a stand-in gets temporary admin powers");
   ok(second.isOwner === false, "host: a stand-in host never becomes owner");
+
+  setHost(s, third.id);
+  ok(!second.isAdmin && !second.temporaryHostAdmin, "host: a previous stand-in loses automatic admin on handoff");
+  ok(third.isAdmin && third.temporaryHostAdmin === true, "host: the new stand-in receives temporary admin");
 
   setHost(s, owner.id);
   ok(s.hostId === owner.id, "host: the owner takes the room straight back");
   ok(owner.isOwner === true, "host: owner powers are untouched by the stand-in");
+  ok(!third.isAdmin && !third.temporaryHostAdmin, "host: automatic admin is removed from the former stand-in");
+
+  const explicit = createRoomState("classic");
+  const original = addPlayer(explicit, "Original", false);
+  const admin = addPlayer(explicit, "Admin", false);
+  actSetAdmin(explicit, original.id, admin.id, true);
+  setHost(explicit, admin.id);
+  setHost(explicit, original.id);
+  ok(admin.isAdmin && !admin.temporaryHostAdmin, "host: an explicitly granted admin role survives handback");
   const v = buildView(s, second.id, 1, 0);
   ok(v.iAmHost === false && v.hostId === owner.id, "host: the view names the current host");
 }

@@ -277,7 +277,7 @@ export default function Game({ code, view, meId, act, onLeave, unreadChat, onCha
             <span
               className={`chip shrink-0 ${p.isTurn ? "!border-white !text-[var(--gold)]" : ""} ${p.eliminated ? "opacity-40 line-through" : ""} ${p.id === meId ? "!text-[var(--ink)] font-semibold" : ""}`}
             >
-              {p.name}<span className="text-[var(--mut)]">{p.cardCount}</span>
+              {p.name}<span className="text-[var(--gold)] text-[10px] tabular-nums" title={`${p.score} points`}>{p.score}pt</span><span className="text-[var(--mut)]">{p.cardCount}</span>
               {p.calledUno && !p.eliminated && p.cardCount > 0 && <span className="unotag !ml-0.5">UNO</span>}
             </span>
           </span>
@@ -292,7 +292,7 @@ export default function Game({ code, view, meId, act, onLeave, unreadChat, onCha
             // equal side columns keep the pile centred even when a seat is empty,
             // and space-evenly spreads the rows instead of pooling dead space
             gridTemplateColumns: "1fr auto 1fr",
-            gridTemplateRows: "auto auto",
+            gridTemplateRows: view.rules.showOwnHandAtTable ? "auto auto auto" : "auto auto",
             alignContent: "space-evenly",
           }}
         >
@@ -437,6 +437,12 @@ export default function Game({ code, view, meId, act, onLeave, unreadChat, onCha
         <div className="flex items-center justify-end min-w-0">
           {ring[2] && <Seat key={ring[2].id} p={ring[2]} edge="right" {...seatCommon} />}
         </div>
+
+        {view.rules.showOwnHandAtTable && me && !me.spectator && me.cardCount > 0 && (
+          <div className="col-span-3 flex justify-center items-end">
+            <Seat key={me.id} p={me} edge="top" {...seatCommon} />
+          </div>
+        )}
         </div>
 
         {banner && (
@@ -659,6 +665,7 @@ function Seat({ p, edge, view, isFlip, isFlex }: {
     >
       <div className="flex items-center gap-1.5 min-w-0">
         <span className="text-[12px] font-semibold truncate flex-1">{p.name}</span>
+        <span className="text-[10px] text-[var(--gold)] tabular-nums shrink-0" title={`${p.score} points`}>{p.score}pt</span>
         {p.isOwner && <Crown size={10} className="text-[var(--acc)] shrink-0" />}
         {p.isAdmin && !p.isOwner && <Shield size={9} className="text-[var(--gold)] shrink-0" />}
         {p.isBot && <Bot size={10} className="text-[var(--mut)] shrink-0" />}

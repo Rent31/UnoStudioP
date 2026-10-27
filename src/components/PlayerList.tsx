@@ -257,6 +257,7 @@ function Row({ p, meId, admin, index, canDrag, lifted, onGrab, onRename, onSetAd
           {p.spectator
             ? <span className="text-[var(--ink2)]">Watching</span>
             : p.id === meId ? "You" : p.isBot ? "Bot" : p.connected ? "Ready" : "Away"}
+          <span className="text-[var(--gold)]"> · {p.score} pts</span>
           {p.wins > 0 && <span className="text-[var(--gold)]"> · {p.wins} {p.wins === 1 ? "win" : "wins"}</span>}
         </span>
       </span>

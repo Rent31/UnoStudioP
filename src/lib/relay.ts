@@ -71,10 +71,10 @@ interface BrokerState {
 }
 
 /**
- * Five entry points across three independent operators. All are WSS on
- * HTTPS-friendly ports, so they slip past the firewalls that block WebRTC.
- * Override with NEXT_PUBLIC_RELAY_BROKERS (semicolon separated) to run your
- * own broker.
+ * Three entry points across independent operators. All are WSS on
+ * HTTPS-friendly ports, so they slip past the firewalls that block WebRTC,
+ * without opening five sockets on every low-end phone. Override with
+ * NEXT_PUBLIC_RELAY_BROKERS (semicolon separated) to run your own broker.
  */
 const DEFAULT_BROKERS = [
   "wss://broker.emqx.io:8084/mqtt",      // EMQX
@@ -86,7 +86,7 @@ const DEFAULT_BROKERS = [
 
 const BROKERS = (process.env.NEXT_PUBLIC_RELAY_BROKERS
   ? process.env.NEXT_PUBLIC_RELAY_BROKERS.split(";").map((u) => u.trim()).filter(Boolean)
-  : DEFAULT_BROKERS).slice(0, 5);
+  : DEFAULT_BROKERS).slice(0, 3);
 
 /** kinds worth repeating: everything periodic or bulky is already retried */
 const REPEAT = new Set<RelayKind>(["join", "welcome", "command", "handoff", "error", "closed", "host"]);

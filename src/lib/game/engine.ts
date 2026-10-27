@@ -42,6 +42,8 @@ export interface PlayerState {
   isBot: boolean;
   isOwner: boolean;
   isAdmin: boolean;
+  /** admin was granted automatically only because this player was a stand-in host */
+  temporaryHostAdmin?: boolean;
   connected: boolean;
   left: boolean;
   lastSeen: number;
@@ -215,6 +217,7 @@ export function addPlayer(s: RoomState, name: string, isBot: boolean, spectator 
     isBot,
     isOwner: s.players.length === 0 && !isBot,
     isAdmin: false,
+    temporaryHostAdmin: false,
     connected: true,
     left: false,
     lastSeen: now(),
@@ -1365,10 +1368,25 @@ function finishRoulette(s: RoomState) {
  *  the room back the moment they are connected again. */
 export function setHost(s: RoomState, hostId: string | null): string | null {
   if (s.hostId === hostId) return null;
+  // A stand-in host's admin bit is temporary only when it was granted by this
+  // function. Remove all such grants on handoff (including older stand-ins),
+  // but preserve any admin role that was explicitly assigned.
+  for (const previous of s.players) {
+    if (previous.id === hostId || !previous.temporaryHostAdmin) continue;
+    previous.isAdmin = false;
+    previous.temporaryHostAdmin = false;
+    log(s, "admin", `${previous.name} is no longer a temporary admin.`);
+  }
   s.hostId = hostId;
   const p = hostId ? findPlayer(s, hostId) : null;
   if (p && !p.left) {
-    if (!p.isAdmin) p.isAdmin = true;
+    if (p.isOwner) {
+      p.isAdmin = true;
+      p.temporaryHostAdmin = false;
+    } else if (!p.isAdmin) {
+      p.isAdmin = true;
+      p.temporaryHostAdmin = true;
+    }
     log(s, "admin", p.isOwner ? `${p.name} is hosting the room again.` : `${p.name} is keeping the room up.`);
   }
   touch(s);
@@ -1471,6 +1489,8 @@ export function actSetAdmin(s: RoomState, actorId: string, targetId: string, adm
   if (!t) return "No such player";
   if (t.isOwner) return admin ? null : "The owner keeps admin";
   t.isAdmin = admin;
+  // An explicit admin change supersedes any automatic stand-in-host grant.
+  t.temporaryHostAdmin = false;
   log(s, "admin", `${t.name} ${admin ? "is now an admin" : "is no longer an admin"}.`);
   touch(s);
   return null;

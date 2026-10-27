@@ -104,6 +104,20 @@ function normalizeState(state: RoomState): RoomState {
   let stamp = 0;
   for (const p of state.players) {
     p.wins ??= 0;
+    if (p.temporaryHostAdmin == null) {
+      // Older room saves predate the explicit marker. Recover the automatic
+      // role from host/admin log entries so an original owner returning can
+      // still revoke a stand-in's admin without stripping manually granted roles.
+      const lastRoleEvent = [...state.events].reverse().find((e) =>
+        e.type === "admin" && e.msg.startsWith(`${p.name} `) &&
+        (e.msg.endsWith("is keeping the room up.") || e.msg.endsWith("is now an admin.") ||
+          e.msg.endsWith("is no longer an admin.") || e.msg.endsWith("is no longer a temporary admin.")),
+      );
+      p.temporaryHostAdmin = !p.isOwner && p.isAdmin && (
+        lastRoleEvent?.msg === `${p.name} is keeping the room up.` ||
+        (!lastRoleEvent && state.hostId === p.id)
+      );
+    }
     p.spectator ??= false;
     p.joinedAt ??= ++stamp;
     p.connected = false;
@@ -270,6 +284,8 @@ export default function RoomClient({ code }: { code: string }) {
     let sendMirrorCopy!: (data: unknown, target?: string) => void;
     let sendHandoffPacket!: (data: unknown, target?: string) => void;
     let bundle: HostBundle | null = null;
+    let lastMirrorVersion = -1;
+    let lastMirrorAt = 0;
     const restoredMirror = loadMirror<MirrorMessage>(code);
     if (restoredMirror?.state) {
       mirrorRef.current = { state: normalizeState(restoredMirror.state), version: restoredMirror.version ?? 1 };
@@ -358,6 +374,8 @@ export default function RoomClient({ code }: { code: string }) {
         joinedAtRef.current = me?.joinedAt ?? joinedAtRef.current;
         outrankSinceRef.current = 0;
         syncPushRef.current = 0;
+        lastMirrorVersion = -1;
+        lastMirrorAt = 0;
         stampOwnBeat();
         keepMirror(state, version);
         saveBundle();
@@ -374,8 +392,10 @@ export default function RoomClient({ code }: { code: string }) {
             bundle.version += 1;
             publishAllRef.current?.();
           }
-        }, 300);
-        snapshotTimer = setInterval(() => publishAllRef.current?.(), 1000);
+        }, 500);
+        // Moves and timer/bot changes publish immediately. The periodic send is
+        // only a repair pass for a missed packet, so keep it lighter on phones.
+        snapshotTimer = setInterval(() => publishAllRef.current?.(), 2500);
         helloTimer = setInterval(() => {
           sendHostBeat(beatPayload());
           stampOwnBeat();
@@ -384,14 +404,23 @@ export default function RoomClient({ code }: { code: string }) {
           // A copy of the room only matters while somebody else could take it
           // over. On your own it is pure chatter: a newcomer is handed one the
           // moment they join, so nothing is lost by not shipping it to nobody.
-          if (bundle && presenceRef.current.size > 0) {
+          if (!bundle || presenceRef.current.size === 0) return;
+          const now = Date.now();
+          // Mirror changes immediately on the next pass, but do not repeatedly
+          // serialize and encrypt the same whole room every two seconds. A
+          // periodic refresh still limits takeover staleness if a send was lost.
+          if (bundle.version !== lastMirrorVersion || now - lastMirrorAt >= 6000) {
             sendMirrorCopy({ state: bundle.state, version: bundle.version });
+            lastMirrorVersion = bundle.version;
+            lastMirrorAt = now;
           }
-        }, 2000);
+        }, 2500);
         const v = localView(0);
         if (v) acceptView(v);
         sendHostBeat(beatPayload());
         sendMirrorCopy({ state, version });
+        lastMirrorVersion = version;
+        lastMirrorAt = Date.now();
         publishAllRef.current?.();
       };
 
@@ -604,8 +633,11 @@ export default function RoomClient({ code }: { code: string }) {
           seenCommands.current.set(peerId, seen);
         }
 
+        const player = findPlayer(bundle.state, pid);
+        const wasConnected = !!player?.connected;
         const error = dispatchGameCommand(bundle.state, pid, command);
         const ticked = tick(bundle.state);
+        if (command.type === "ping" && !ticked && wasConnected) return;
         if (error) {
           if (peerId) sendError({ message: error }, peerId);
           else { showToast(error); playSound("error"); }
@@ -616,8 +648,9 @@ export default function RoomClient({ code }: { code: string }) {
           publishAll(peerId);
           return;
         }
-        if (command.type !== "ping" || ticked) bundle.version += 1;
-        publishAll(command.type === "ping" ? undefined : peerId);
+        const pingChanged = command.type === "ping" && !wasConnected;
+        if (command.type !== "ping" || ticked || pingChanged) bundle.version += 1;
+        publishAll(command.type === "ping" && !pingChanged ? undefined : peerId);
 
         if (command.type === "leave" && peerId) {
           peerPlayers.current.delete(peerId);

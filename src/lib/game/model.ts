@@ -368,6 +368,7 @@ export interface HouseRules {
   colorLock: boolean;
   wildChain: boolean;
   wildMayhem: boolean;
+  showOwnHandAtTable: boolean;
 }
 
 export type HouseRuleKey = keyof HouseRules;
@@ -398,6 +399,7 @@ export const DEFAULT_RULES: HouseRules = {
   colorLock: false,
   wildChain: false,
   wildMayhem: false,
+  showOwnHandAtTable: false,
 };
 
 export interface RuleDef { key: HouseRuleKey; name: string; desc: string }
@@ -411,6 +413,7 @@ export const GENERAL_RULES: RuleDef[] = [
   { key: "forcedPlay", name: "Forced Play", desc: "If the card you draw is playable, you have to play it." },
   { key: "noWinOnAction", name: "No Win On Action", desc: "You cannot go out on an action card. Draw one penalty card instead." },
   { key: "challengeWild4", name: "Challenge Wild Draw 4", desc: "Call out a suspect Wild Draw 4. The loser of the challenge draws extra." },
+  { key: "showOwnHandAtTable", name: "Show Your Hand at Your Seat", desc: "Add your own card backs to the table at your seat; your hand stays visible below too." }
 ];
 
 export const VARIANT_RULES: Record<Variant, RuleDef[]> = {
