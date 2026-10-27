@@ -151,7 +151,7 @@ function token(): string {
 export function createRoomState(variant: Variant): RoomState {
   return {
     variant,
-    rules: { ...DEFAULT_RULES },
+    rules: { ...DEFAULT_RULES, showOwnHandAtTable: variant === "flip" },
     phase: "lobby",
     players: [],
     round: 0,
@@ -1580,8 +1580,10 @@ export function actSetVariant(s: RoomState, actorId: string, variant: Variant): 
   if (!actor?.isAdmin || actor.left) return "Not allowed";
   if (s.phase !== "lobby") return "Game already started";
   const wasDefault = s.rules.pointGoal === VARIANT_META[s.variant].target;
+  const wasDefaultOwnHand = s.rules.showOwnHandAtTable === (s.variant === "flip");
   s.variant = variant;
   if (wasDefault) s.rules.pointGoal = VARIANT_META[variant].target;
+  if (wasDefaultOwnHand) s.rules.showOwnHandAtTable = variant === "flip";
   log(s, "variant", `Mode set to ${VARIANT_META[variant].name}.`);
   touch(s);
   return null;

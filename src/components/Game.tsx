@@ -37,19 +37,25 @@ export default function Game({ code, view, meId, act, onLeave, unreadChat, onCha
   unreadChat?: boolean; onChatSeen?: () => void;
 }) {
   const me = view.players.find((p) => p.id === meId);
-  const myIdx = view.players.findIndex((p) => p.id === meId);
+  const tablePlayers = useMemo(
+    () => view.players.filter((p) => !p.left && !p.spectator),
+    [view.players],
+  );
+  const myIdx = tablePlayers.findIndex((p) => p.id === meId);
+  const showOwnSeatInOrder = view.rules.showOwnHandAtTable && tablePlayers.length > 2;
 
+  // Without the rule, keep the usual player-relative seating. With it, all
+  // table seats follow the actual player-list order, including your own seat.
   const opponents = useMemo(() => {
     const out: PlayerView[] = [];
-    const n = view.players.length;
-    for (let i = 1; i <= n; i++) {
-      const p = view.players[(myIdx + i) % n];
-      if (p && !p.left && p.id !== meId) out.push(p);
-    }
+    const n = tablePlayers.length;
+    if (myIdx < 0 || n < 2) return out;
+    for (let step = 1; step < n; step++) out.push(tablePlayers[(myIdx + step) % n]);
     return out;
-  }, [view.players, myIdx, meId]);
+  }, [tablePlayers, myIdx]);
 
-  const [off, setOff] = useState(0);
+  const initialTablePage = showOwnSeatInOrder ? Math.floor(Math.max(0, myIdx) / 4) : 0;
+  const [off, setOff] = useState(initialTablePage);
   const [sel, setSel] = useState<HandCardView | null>(null);
   const [selColor, setSelColor] = useState<ColorName | null>(null);
   const [selTarget, setSelTarget] = useState<string | null>(null);
@@ -93,16 +99,26 @@ export default function Game({ code, view, meId, act, onLeave, unreadChat, onCha
     return orderTurnSeats(view.players, view.direction, current);
   }, [view.players, view.direction, meId]);
 
-  // Seats are shown a page at a time, three to a page. A short final page
-  // simply fills the left and top slots and leaves the rest empty.
-  const pageCount = Math.max(1, Math.ceil(opponents.length / 3));
+  // Normal view pages three opponents at a time. The optional full seat order
+  // pages four players at a time so your own back can occupy its list position.
+  const pageCount = Math.max(1, showOwnSeatInOrder
+    ? Math.ceil(tablePlayers.length / 4)
+    : Math.ceil(opponents.length / 3));
   const page = Math.min(off, pageCount - 1);
-  // With only one opponent there is no left/right ring to speak of: park them
-  // at the top of the table instead of off to one side.
-  const ring: (PlayerView | undefined)[] = opponents.length === 1
-    ? [undefined, opponents[0], undefined]
-    : opponents.slice(page * 3, page * 3 + 3);
-  const outside = opponents.filter((p) => !ring.includes(p));
+  let ring: (PlayerView | undefined)[];
+  let bottomSeat: PlayerView | undefined;
+  if (showOwnSeatInOrder) {
+    const pagePlayers = tablePlayers.slice(page * 4, page * 4 + 4);
+    // List-order slots wrap around the table: left, top, right, bottom.
+    ring = [pagePlayers[0], pagePlayers[1], pagePlayers[2]];
+    bottomSeat = pagePlayers[3];
+  } else {
+    // With just one opponent, keep the familiar face-to-face top/bottom layout.
+    ring = opponents.length === 1
+      ? [undefined, opponents[0], undefined]
+      : opponents.slice(page * 3, page * 3 + 3);
+    bottomSeat = view.rules.showOwnHandAtTable && me && !me.spectator ? me : undefined;
+  }
 
   const isFlip = view.variant === "flip";
   const isFlex = view.variant === "flex";
@@ -292,7 +308,7 @@ export default function Game({ code, view, meId, act, onLeave, unreadChat, onCha
             // equal side columns keep the pile centred even when a seat is empty,
             // and space-evenly spreads the rows instead of pooling dead space
             gridTemplateColumns: "1fr auto 1fr",
-            gridTemplateRows: view.rules.showOwnHandAtTable ? "auto auto auto" : "auto auto",
+            gridTemplateRows: bottomSeat ? "auto auto auto" : "auto auto",
             alignContent: "space-evenly",
           }}
         >
@@ -438,9 +454,9 @@ export default function Game({ code, view, meId, act, onLeave, unreadChat, onCha
           {ring[2] && <Seat key={ring[2].id} p={ring[2]} edge="right" {...seatCommon} />}
         </div>
 
-        {view.rules.showOwnHandAtTable && me && !me.spectator && me.cardCount > 0 && (
+        {bottomSeat && (
           <div className="col-span-3 flex justify-center items-end">
-            <Seat key={me.id} p={me} edge="top" {...seatCommon} />
+            <Seat key={bottomSeat.id} p={bottomSeat} edge="top" {...seatCommon} />
           </div>
         )}
         </div>

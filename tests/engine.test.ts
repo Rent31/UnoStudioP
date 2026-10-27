@@ -2,7 +2,7 @@ import {
   addPlayer, actPlay, actDraw, actPass, actUno, actChallenge,
   tick, actChooseColor, actEndDouble, actReorder, actShuffleSeats, actChat, actSetChat, actClearChat, startRound, buildView, createRoomState, addPlayer as _addP, RoomState,
   actRouletteColor, actRoulettePull, actRouletteFinish, ROULETTE_HOLD_MS,
-  actSetSpectate, actSetAdmin, actStart,
+  actSetSpectate, actSetAdmin, actSetVariant, actStart,
 } from "../src/lib/game/engine";
 import { GameCard, Face, Variant, ColorName, buildAllWildDeck, buildFlipDeck, buildFlexDeck } from "../src/lib/game/model";
 import { dispatchGameCommand } from "../src/lib/game/dispatch";
@@ -624,6 +624,17 @@ ok(buildAllWildDeck().every((c) => c.light.color === "wild"), "every all wild ca
   const before = s.players[s.turn.playerIdx].id;
   actPlay(s, before === a.id ? a.id : b.id, s.players[s.turn.playerIdx].hand[0].id, {});
   ok(s.players[s.turn.playerIdx].id !== spec.id, "seats: turn order skips the watcher");
+}
+
+// ---------------- Flip defaults to showing your own back at its table seat
+{
+  const classic = createRoomState("classic");
+  const owner = addPlayer(classic, "A", false);
+  ok(!classic.rules.showOwnHandAtTable, "own table seat: hidden by default outside Flip");
+  actSetVariant(classic, owner.id, "flip");
+  ok(classic.rules.showOwnHandAtTable, "own table seat: enabled by default when switching to Flip");
+  const flip = createRoomState("flip");
+  ok(flip.rules.showOwnHandAtTable, "own table seat: enabled by default in a new Flip room");
 }
 
 // ---------------- the room can be handed to another browser and taken back

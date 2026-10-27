@@ -94,7 +94,9 @@ const SOUND_RANK: Record<string, number> = {
 };
 
 function normalizeState(state: RoomState): RoomState {
+  const hadOwnHandRule = Object.prototype.hasOwnProperty.call(state.rules ?? {}, "showOwnHandAtTable");
   state.rules = { ...DEFAULT_RULES, ...(state.rules ?? {}) };
+  if (!hadOwnHandRule) state.rules.showOwnHandAtTable = state.variant === "flip";
   state.chat ??= [];
   state.chatOn ??= true;
   state.chatSeq ??= 0;
