@@ -159,7 +159,7 @@ export default function RoomClient({ code }: { code: string }) {
   const pingRef = useRef<(() => void) | null>(null);
   /** when this browser last heard from the browser running the room */
   const lastViewAtRef = useRef<number>(0);
-  const publishAllRef = useRef<(() => void) | null>(null);
+  const publishAllRef = useRef<((alsoRelayTo?: string) => void) | null>(null);
   const stopHostingRef = useRef<(() => void) | null>(null);
   const handoffRef = useRef<(() => void) | null>(null);
   const roomRef = useRef<{ leave: () => Promise<void> } | null>(null);
@@ -492,10 +492,10 @@ export default function RoomClient({ code }: { code: string }) {
       void relayRef.current.start();
 
       /** send one packet down both transports; the relay only where it is needed */
-      const mkSender = (kind: RelayKind, action: RoomAction) => (data: unknown, target?: string) => {
+      const mkSender = (kind: RelayKind, action: RoomAction) => (data: unknown, target?: string, alsoRelay = false) => {
         action.send(data, target ? { target } : undefined).catch(() => {});
         const relay = relayRef.current;
-        if (relay && (!target || needsRelay(target))) void relay.send(kind, data, target);
+        if (relay && (!target || alsoRelay || needsRelay(target))) void relay.send(kind, data, target);
       };
 
       /** receive from both transports; the trystero peer id and the relay id are the same */
@@ -536,7 +536,7 @@ export default function RoomClient({ code }: { code: string }) {
         if (next) acceptView(next);
       };
 
-      const sendViewTo = (peerId: string, pid: string, welcome = false) => {
+      const sendViewTo = (peerId: string, pid: string, welcome = false, alsoRelay = false) => {
         if (!bundle) return;
         const player = findPlayer(bundle.state, pid);
         const since = peerSeq.current.get(peerId) ?? 0;
@@ -550,14 +550,20 @@ export default function RoomClient({ code }: { code: string }) {
           };
           sendWelcome(data, peerId);
         } else {
-          sendSnapshot({ view: peerView }, peerId);
+          // Normal snapshots use whichever transport is currently healthiest.
+          // For the peer who just acted, send the same authoritative version
+          // over both WebRTC and the relay so a one-way ICE failure cannot leave
+          // the actor staring at their pre-move hand while everyone else moved.
+          sendSnapshot({ view: peerView }, peerId, alsoRelay);
         }
       };
 
-        const publishAll = () => {
+        const publishAll = (alsoRelayTo?: string) => {
           if (!bundle) return;
           persistAndLocalView();
-          for (const [peerId, pid] of peerPlayers.current) sendViewTo(peerId, pid);
+          for (const [peerId, pid] of peerPlayers.current) {
+            sendViewTo(peerId, pid, false, peerId === alsoRelayTo);
+          }
         };
         publishAllRef.current = publishAll;
 
@@ -603,11 +609,15 @@ export default function RoomClient({ code }: { code: string }) {
         if (error) {
           if (peerId) sendError({ message: error }, peerId);
           else { showToast(error); playSound("error"); }
-          if (ticked) { bundle.version += 1; publishAll(); }
+          if (ticked) bundle.version += 1;
+          // A stale client can submit an action the host refuses. Always send
+          // back the current table, using the relay as a second path for that
+          // actor, so its UI can recover instead of repeating a stale move.
+          publishAll(peerId);
           return;
         }
         if (command.type !== "ping" || ticked) bundle.version += 1;
-        publishAll();
+        publishAll(command.type === "ping" ? undefined : peerId);
 
         if (command.type === "leave" && peerId) {
           peerPlayers.current.delete(peerId);
@@ -781,7 +791,7 @@ export default function RoomClient({ code }: { code: string }) {
         if (!bundle || !isHostRef.current) return;
         const pid = peerPlayers.current.get(peerId);
         if (!pid) {
-          sendError({ message: "Rejoin the room." }, peerId);
+          sendError({ message: "Rejoin the room." }, peerId, true);
           return;
         }
         runCommand(pid, command, peerId);
