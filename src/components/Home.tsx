@@ -1,8 +1,7 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
 import { ArrowRight, Info } from "lucide-react";
 import {
   createHostIntent,
@@ -15,16 +14,13 @@ import { playSound } from "@/lib/sound";
 import { ThemeToggle, SoundToggle } from "@/components/Toggles";
 
 export default function Home() {
-  const router = useRouter();
   const [mode, setMode] = useState<"create" | "join">("create");
   const [name, setName] = useState("");
   const [code, setCode] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
-  const navTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => { setName(savedName()); }, []);
-  useEffect(() => () => { if (navTimer.current) clearTimeout(navTimer.current); }, []);
 
   const go = () => {
     const nm = name.trim();
@@ -44,19 +40,11 @@ export default function Home() {
       playSound("click");
     }
 
-    try {
-      router.push(target);
-    } catch {
-      window.location.href = target;
-      return;
-    }
-    // The router holds this page on screen until the room is ready, so a route
-    // that never resolved left the button locked on "One moment" with nowhere
-    // to go. Give it a moment, then hand the button back and go there directly.
-    navTimer.current = setTimeout(() => {
-      setBusy(false);
-      window.location.href = target;
-    }, 3000);
+    // A full navigation is more reliable on mobile browsers and installed PWAs
+    // than a client-side transition through the /room/:code rewrite. The room
+    // shell reads the code from the URL and the service worker can still serve
+    // its cached shell if the network is weak.
+    window.location.assign(target);
   };
 
   return (

@@ -844,6 +844,7 @@ export default function RoomClient({ code }: { code: string }) {
           return;
         }
         setJoinErr(data.message);
+        setNetworkNote("");
         showToast(data.message);
         playSound("error");
       });
@@ -1139,6 +1140,8 @@ export default function RoomClient({ code }: { code: string }) {
     setName(clean);
     setJoinBusy(true);
     setJoinErr("");
+    setNetworkNote(hostPeerRef.current ? "Joining the room…" : "Looking for the room…");
+    announceRef.current?.();
     if (!sendJoinRef.current) {
       // The transport may have failed before its actions were registered.
       // A reload retries the entire peer/relay setup instead of silently doing
@@ -1146,7 +1149,7 @@ export default function RoomClient({ code }: { code: string }) {
       window.location.reload();
       return;
     }
-    sendJoinRef.current();
+    sendJoinRef.current(true);
   }, [code]);
 
   const leaveForHome = useCallback(async () => {
@@ -1224,7 +1227,9 @@ export default function RoomClient({ code }: { code: string }) {
             onKeyDown={(e) => { if (e.key === "Enter") doJoin(name); }}
           />
           <button className="btn acc w-full mt-2.5" onClick={() => doJoin(name)}>
-            {joinBusy && hostPeerRef.current ? "Retry join" : <><LogIn size={14} /> Join peer room</>}
+            {joinBusy
+              ? hostPeerRef.current ? "Joining…" : "Looking for the room…"
+              : <><LogIn size={14} /> Join peer room</>}
           </button>
           {joinErr && <p className="text-[12px] text-[#ff6b52] mt-2.5">{joinErr}</p>}
           <button className="btn ghost w-full mt-2" onClick={() => router.push("/")}>Back</button>
